@@ -1,5 +1,5 @@
 """
-Упрощенный сервер для ментального покера
+Упрощенный сервер для ментального покера с системой фишек и фазами игры
 """
 
 import asyncio
@@ -136,7 +136,23 @@ class PokerServer:
             'players': [player_id],
             'host': player_id,
             'status': 'waiting',
-            'ready_players': set()
+            'ready_players': set(),
+            'current_player_index': 0,
+            'phase': 'waiting',
+            'phase_actions': 0,  # Счетчик действий в текущей фазе
+            'community_cards': [],
+            'pot': 0,
+            'current_bet': 0,
+            'player_data': {},  # Данные игроков: фишки, текущая ставка, статус
+            'player_cards': {}  # Карты игроков
+        }
+
+        # Инициализируем данные игрока
+        self.games[game_id]['player_data'][player_id] = {
+            'chips': 1000,  # Начальные фишки
+            'current_bet': 0,
+            'folded': False,
+            'acted_this_phase': False
         }
 
         logger.info(f"🎮 Создана игра {game_id} игроком {player_id}")
@@ -171,6 +187,14 @@ class PokerServer:
         # Добавляем игрока в игру
         game['players'].append(player_id)
 
+        # Инициализируем данные нового игрока
+        game['player_data'][player_id] = {
+            'chips': 1000,  # Начальные фишки
+            'current_bet': 0,
+            'folded': False,
+            'acted_this_phase': False
+        }
+
         logger.info(f"👥 Игрок {player_id} присоединился к игре {game_id}")
 
         # Отправляем подтверждение новому игроку
@@ -189,13 +213,6 @@ class PokerServer:
         }, exclude_player=player_id)
 
         print(f'👥 Игрок {player_id} присоединился к игре {game_id}')
-
-        # Если игроков достаточно, уведомляем о возможности начала
-        if len(game['players']) >= 2:
-            await self.broadcast_to_game(game_id, {
-                'type': 'game_can_start',
-                'message': 'Достаточно игроков для начала! Используйте команду ready'
-            })
 
     async def handle_player_ready(self, player_id, message):
         """Обработка готовности игрока"""
@@ -217,13 +234,15 @@ class PokerServer:
         await self.broadcast_to_game(game_id, {
             'type': 'player_ready',
             'player_id': player_id,
-            'ready_players': list(game['ready_players'])
+            'ready_players': list(game['ready_players']),
+            'total_players': len(game['players'])
         })
 
         logger.info(f"✅ Игрок {player_id} готов к игре")
 
-        # Если все готовы, начинаем игру
-        if len(game['ready_players']) == len(game['players']) and len(game['players']) >= 2:
+        # Если все готовы и есть минимум 2 игрока, начинаем игру
+        if (len(game['ready_players']) == len(game['players']) and
+            len(game['players']) >= 2):
             await self.start_game(game_id)
 
     async def handle_player_action(self, player_id, message):
@@ -234,12 +253,325 @@ class PokerServer:
             await self.send_error(player_id, "Игра не найдена")
             return
 
+        game = self.games[game_id]
+        player_data = game['player_data'][player_id]
+
+        # Проверяем, что сейчас ход этого игрока
+        current_player = game['players'][game['current_player_index']]
+        if player_id != current_player:
+            await self.send_error(player_id, "Сейчас не ваш ход")
+            return
+
+        action = message.get('action')
+        amount = message.get('amount', 0)
+
+        # Обрабатываем действие
+        if action == 'fold':
+            player_data['folded'] = True
+            player_data['acted_this_phase'] = True
+            game['phase_actions'] += 1
+
+        elif action == 'check':
+            # Проверяем, можно ли сделать чек (текущая ставка = 0)
+            if game['current_bet'] > 0:
+                await self.send_error(player_id, "Нельзя сделать чек, есть текущая ставка")
+                return
+            player_data['acted_this_phase'] = True
+            game['phase_actions'] += 1
+
+        elif action == 'call':
+            # Уравниваем текущую ставку
+            call_amount = game['current_bet'] - player_data['current_bet']
+            if call_amount > player_data['chips']:
+                await self.send_error(player_id, "Недостаточно фишек")
+                return
+
+            player_data['chips'] -= call_amount
+            player_data['current_bet'] = game['current_bet']
+            game['pot'] += call_amount
+            player_data['acted_this_phase'] = True
+            game['phase_actions'] += 1
+
+        elif action == 'bet':
+            if amount <= 0:
+                await self.send_error(player_id, "Ставка должна быть положительной")
+                return
+            if amount > player_data['chips']:
+                await self.send_error(player_id, "Недостаточно фишек")
+                return
+            if game['current_bet'] > 0:
+                await self.send_error(player_id, "Уже есть ставка, используйте raise")
+                return
+
+            player_data['chips'] -= amount
+            player_data['current_bet'] = amount
+            game['current_bet'] = amount
+            game['pot'] += amount
+            player_data['acted_this_phase'] = True
+            game['phase_actions'] += 1
+
+        elif action == 'raise':
+            if amount <= 0:
+                await self.send_error(player_id, "Повышение должно быть положительным")
+                return
+            if amount > player_data['chips']:
+                await self.send_error(player_id, "Недостаточно фишек")
+                return
+            if game['current_bet'] == 0:
+                await self.send_error(player_id, "Нет текущей ставки, используйте bet")
+                return
+            if amount <= game['current_bet']:
+                await self.send_error(player_id, "Повышение должно быть больше текущей ставки")
+                return
+
+            total_bet = player_data['current_bet'] + amount
+            player_data['chips'] -= amount
+            player_data['current_bet'] = total_bet
+            game['current_bet'] = total_bet
+            game['pot'] += amount
+            player_data['acted_this_phase'] = True
+            game['phase_actions'] += 1
+
+        else:
+            await self.send_error(player_id, f"Неизвестное действие: {action}")
+            return
+
         # Пересылаем действие всем игрокам в игре
         await self.broadcast_to_game(game_id, {
             'type': 'player_action',
             'player_id': player_id,
-            'action': message.get('action'),
-            'amount': message.get('amount', 0)
+            'action': action,
+            'amount': amount,
+            'pot': game['pot'],
+            'current_bet': game['current_bet']
+        })
+
+        # Обновляем состояние игроков
+        await self.broadcast_game_state(game_id)
+
+        logger.info(f"🎮 Игрок {player_id} сделал ход: {action} {amount if amount > 0 else ''}")
+
+        # Проверяем, нужно ли переходить к следующей фазе
+        active_players = [p for p in game['players'] if not game['player_data'][p]['folded']]
+        if game['phase_actions'] >= len(active_players):
+            # Все активные игроки сделали ход в этой фазе
+            await self.advance_game_phase(game_id)
+        else:
+            # Переходим к следующему игроку
+            await self.next_player(game_id)
+
+    async def next_player(self, game_id):
+        """Переход к следующему игроку"""
+        game = self.games[game_id]
+
+        # Находим следующего активного игрока
+        start_index = game['current_player_index']
+        while True:
+            game['current_player_index'] = (game['current_player_index'] + 1) % len(game['players'])
+            next_player = game['players'][game['current_player_index']]
+
+            # Если игрок не сбросил карты, это следующий игрок
+            if not game['player_data'][next_player]['folded']:
+                break
+
+            # Если мы прошли полный круг, выходим
+            if game['current_player_index'] == start_index:
+                break
+
+        # Уведомляем следующего игрока о его ходе
+        next_player = game['players'][game['current_player_index']]
+        await self.send_to_player(next_player, {
+            'type': 'your_turn',
+            'message': 'Сейчас ваш ход! Введите действие (fold, check, call, bet, raise)'
+        })
+
+    async def advance_game_phase(self, game_id):
+        """Переход к следующей фазе игры"""
+        game = self.games[game_id]
+
+        # Сбрасываем состояние фазовых действий
+        game['phase_actions'] = 0
+        game['current_bet'] = 0
+
+        # Сбрасываем ставки игроков для новой фазы
+        for player_id in game['players']:
+            game['player_data'][player_id]['current_bet'] = 0
+            game['player_data'][player_id]['acted_this_phase'] = False
+
+        # Переходим к следующей фазе
+        if game['phase'] == 'preflop':
+            game['phase'] = 'flop'
+            # Выкладываем 3 карты на флоп
+            if len(game['deck']) >= 3:
+                game['community_cards'] = game['deck'][:3]
+                game['deck'] = game['deck'][3:]
+
+        elif game['phase'] == 'flop':
+            game['phase'] = 'turn'
+            # Выкладываем 4-ю карту
+            if len(game['deck']) >= 1:
+                game['community_cards'].append(game['deck'][0])
+                game['deck'] = game['deck'][1:]
+
+        elif game['phase'] == 'turn':
+            game['phase'] = 'river'
+            # Выкладываем 5-ю карту
+            if len(game['deck']) >= 1:
+                game['community_cards'].append(game['deck'][0])
+                game['deck'] = game['deck'][1:]
+
+        elif game['phase'] == 'river':
+            # Завершаем игру
+            await self.end_game(game_id)
+            return
+
+        # Уведомляем о смене фазы
+        await self.broadcast_to_game(game_id, {
+            'type': 'phase_changed',
+            'phase': game['phase'],
+            'community_cards': game['community_cards'],
+            'message': f'Фаза изменена: {game["phase"]}'
+        })
+
+        # Обновляем состояние игры
+        await self.broadcast_game_state(game_id)
+
+        # Начинаем новую фазу с первого активного игрока
+        game['current_player_index'] = 0
+        await self.next_player(game_id)
+
+        logger.info(f"🔄 Игра {game_id} перешла к фазе: {game['phase']}")
+
+    def evaluate_hand(self, player_cards, community_cards):
+        """Оценка силы руки игрока"""
+        # Простая система оценки для демонстрации
+        # В реальной игре здесь должна быть сложная логика оценки покерных рук
+
+        # Создаем полный набор карт
+        all_cards = player_cards + community_cards
+
+        # Преобразуем карты в числовые значения для оценки
+        card_values = []
+        for card in all_cards:
+            rank = card[0]
+            if rank == 'A':
+                card_values.append(14)
+            elif rank == 'K':
+                card_values.append(13)
+            elif rank == 'Q':
+                card_values.append(12)
+            elif rank == 'J':
+                card_values.append(11)
+            elif rank == '1':  # 10
+                card_values.append(10)
+            else:
+                card_values.append(int(rank))
+
+        # Сортируем по убыванию
+        card_values.sort(reverse=True)
+
+        # Проверяем комбинации (упрощенная версия)
+        # 1. Пара
+        pairs = []
+        for i in range(len(card_values)):
+            for j in range(i+1, len(card_values)):
+                if card_values[i] == card_values[j]:
+                    pairs.append(card_values[i])
+
+        # 2. Две пары
+        if len(pairs) >= 2:
+            return (2, max(pairs))  # Возвращаем силу двух пар
+
+        # 3. Сет (три карты одного достоинства)
+        for i in range(len(card_values)):
+            count = card_values.count(card_values[i])
+            if count >= 3:
+                return (3, card_values[i])
+
+        # 4. Пара
+        if len(pairs) >= 1:
+            return (1, pairs[0])
+
+        # 5. Старшая карта
+        return (0, max(card_values))
+
+    async def end_game(self, game_id):
+        """Завершение игры и определение победителя"""
+        game = self.games[game_id]
+
+        # Находим активных игроков (не сбросивших карты)
+        active_players = [p for p in game['players'] if not game['player_data'][p]['folded']]
+
+        if len(active_players) == 0:
+            # Все сбросили карты - победителя нет
+            winner_message = "Все игроки сбросили карты - победителя нет"
+            winners = []
+        elif len(active_players) == 1:
+            # Один активный игрок - он победитель
+            winner = active_players[0]
+            game['player_data'][winner]['chips'] += game['pot']
+            winner_message = f"Победитель: {winner} (единственный активный игрок)"
+            winners = [winner]
+        else:
+            # Определяем победителя по силе комбинации
+            best_hand = None
+            winners = []
+
+            for player_id in active_players:
+                player_hand = self.evaluate_hand(
+                    game['player_cards'][player_id],
+                    game['community_cards']
+                )
+
+                if best_hand is None or player_hand > best_hand:
+                    best_hand = player_hand
+                    winners = [player_id]
+                elif player_hand == best_hand:
+                    winners.append(player_id)
+
+            # Делим банк между победителями
+            if winners:
+                split_pot = game['pot'] // len(winners)
+                for winner in winners:
+                    game['player_data'][winner]['chips'] += split_pot
+
+                if len(winners) == 1:
+                    winner_message = f"Победитель: {winners[0]}"
+                else:
+                    winner_message = f"Ничья между: {', '.join(winners)}"
+            else:
+                winner_message = "Победитель не определен"
+
+        # Отправляем результаты игры
+        await self.broadcast_to_game(game_id, {
+            'type': 'game_result',
+            'winners': winners,
+            'pot': game['pot'],
+            'message': f'Игра завершена! {winner_message}'
+        })
+
+        # Сбрасываем состояние игры для новой раздачи
+        game['status'] = 'waiting'
+        game['phase'] = 'waiting'
+        game['ready_players'] = set()
+        game['pot'] = 0  # Важно: обнуляем банк для новой раздачи
+        game['current_bet'] = 0
+        game['community_cards'] = []
+        game['phase_actions'] = 0
+        game['player_cards'] = {}  # Очищаем карты игроков
+
+        # Сбрасываем состояние игроков (но сохраняем фишки)
+        for player_id in game['players']:
+            game['player_data'][player_id]['current_bet'] = 0
+            game['player_data'][player_id]['folded'] = False
+            game['player_data'][player_id]['acted_this_phase'] = False
+
+        logger.info(f"🏁 Игра {game_id} завершена. {winner_message}")
+
+        # Уведомляем о возможности начать новую игру
+        await self.broadcast_to_game(game_id, {
+            'type': 'game_can_restart',
+            'message': 'Игра завершена! Введите "ready" для новой раздачи'
         })
 
     async def handle_chat_message(self, player_id, message):
@@ -266,21 +598,35 @@ class PokerServer:
         """Начало игры"""
         game = self.games[game_id]
         game['status'] = 'playing'
+        game['phase'] = 'preflop'
+        game['pot'] = 0  # Важно: обнуляем банк для новой раздачи
+        game['current_bet'] = 0
+        game['phase_actions'] = 0
 
         logger.info(f"🎲 Начало игры {game_id}")
 
-        # Создаем простую колоду для демонстрации
-        deck = self.create_deck()
-        random.shuffle(deck)
+        # Создаем и тасуем колоду
+        game['deck'] = self.create_deck()
+        random.shuffle(game['deck'])
+
+        # Сбрасываем состояние игроков
+        for player_id in game['players']:
+            game['player_data'][player_id]['current_bet'] = 0
+            game['player_data'][player_id]['folded'] = False
+            game['player_data'][player_id]['acted_this_phase'] = False
 
         # Раздаем карты
         player_cards = {}
         for i, player_id in enumerate(game['players']):
             # По 2 карты каждому игроку
-            player_cards[player_id] = deck[i*2:(i+1)*2]
+            if len(game['deck']) >= 2:
+                player_cards[player_id] = game['deck'][i*2:(i+1)*2]
 
-        # 5 карт на стол
-        community_cards = deck[len(game['players'])*2:len(game['players'])*2+5]
+        # Сохраняем карты игроков для определения победителя
+        game['player_cards'] = player_cards
+
+        # Инициализируем общие карты
+        game['community_cards'] = []
 
         # Отправляем начальное состояние игры
         for player_id in game['players']:
@@ -289,8 +635,17 @@ class PokerServer:
                 'game_id': game_id,
                 'your_cards': player_cards[player_id],
                 'community_cards': [],
-                'players': game['players']
+                'players': game['players'],
+                'chips': game['player_data'][player_id]['chips']
             })
+
+        # Уведомляем первого игрока о его ходе
+        game['current_player_index'] = 0
+        first_player = game['players'][0]
+        await self.send_to_player(first_player, {
+            'type': 'your_turn',
+            'message': 'Сейчас ваш ход! Введите действие (fold, check, call, bet, raise)'
+        })
 
         await self.broadcast_to_game(game_id, {
             'type': 'game_state',
@@ -311,6 +666,20 @@ class PokerServer:
                 deck.append(f"{rank}{suit}")
 
         return deck
+
+    async def broadcast_game_state(self, game_id):
+        """Отправка текущего состояния игры всем игрокам"""
+        game = self.games[game_id]
+
+        for player_id in game['players']:
+            player_data = game['player_data'][player_id]
+            await self.send_to_player(player_id, {
+                'type': 'game_state_update',
+                'chips': player_data['chips'],
+                'pot': game['pot'],
+                'current_bet': game['current_bet'],
+                'community_cards': game['community_cards']
+            })
 
     async def send_to_player(self, player_id, message):
         """Отправка сообщения конкретному игроку"""

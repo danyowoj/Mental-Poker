@@ -21,11 +21,16 @@ class MessageType(Enum):
     PLAYER_JOINED = "player_joined"
     PLAYER_LEFT = "player_left"
     GAME_CAN_START = "game_can_start"
+    GAME_CAN_RESTART = "game_can_restart"
 
     # Игровой процесс
     GAME_STARTED = "game_started"
     GAME_STATE = "game_state"
+    GAME_STATE_UPDATE = "game_state_update"
     PLAYER_ACTION = "player_action"
+    YOUR_TURN = "your_turn"
+    PHASE_CHANGED = "phase_changed"
+    GAME_RESULT = "game_result"
 
     # Чат
     CHAT_MESSAGE = "chat_message"

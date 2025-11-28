@@ -1,5 +1,5 @@
 """
-Упрощенный клиент для ментального покера
+Упрощенный клиент для ментального покера с системой фишек и фазами игры
 """
 
 import asyncio
@@ -24,6 +24,12 @@ class PokerClient:
         self.player_id = None
         self.game_id = None
         self.connected = False
+        self.my_turn = False
+        self.my_cards = []
+        self.community_cards = []
+        self.chips = 0
+        self.pot = 0
+        self.current_bet = 0
 
     async def connect(self):
         """Подключение к серверу"""
@@ -95,36 +101,97 @@ class PokerClient:
         elif msg_type == 'player_ready':
             player_id = message.get('player_id')
             ready_players = message.get('ready_players', [])
+            total_players = message.get('total_players', 0)
             print(f"✅ Игрок {player_id} готов")
-            print(f"🎯 Готовы: {len(ready_players)}/{len(ready_players) + 1}")  # Примерное количество
+            print(f"🎯 Готовы: {len(ready_players)}/{total_players}")
 
         elif msg_type == 'game_can_start':
             print(f"💡 {message.get('message')}")
 
         elif msg_type == 'game_started':
             self.game_id = message.get('game_id')
-            your_cards = message.get('your_cards', [])
+            self.my_cards = message.get('your_cards', [])
+            self.community_cards = message.get('community_cards', [])
             players = message.get('players', [])
+            self.chips = message.get('chips', 0)
+            self.pot = 0  # Сбрасываем банк при начале новой игры
 
             print("\n" + "="*50)
             print("🎲 ИГРА НАЧАЛАСЬ!")
             print(f"👥 Игроки: {', '.join(players)}")
-            print(f"🃏 Ваши карты: {', '.join(your_cards)}")
+            print(f"🃏 Ваши карты: {', '.join(self.my_cards)}")
+            print(f"💰 Ваши фишки: {self.chips}")
             print("="*50)
 
         elif msg_type == 'game_state':
             print(f"📊 {message.get('message')}")
 
+        elif msg_type == 'game_state_update':
+            self.chips = message.get('chips', 0)
+            self.pot = message.get('pot', 0)
+            self.current_bet = message.get('current_bet', 0)
+            self.community_cards = message.get('community_cards', [])
+
+            print(f"💰 Ваши фишки: {self.chips}")
+            print(f"🏦 Банк: {self.pot}")
+            if self.current_bet > 0:
+                print(f"📈 Текущая ставка: {self.current_bet}")
+            if self.community_cards:
+                print(f"🃏 Карты на столе: {', '.join(self.community_cards)}")
+
         elif msg_type == 'player_action':
             player_id = message.get('player_id')
             action = message.get('action')
             amount = message.get('amount', 0)
+            pot = message.get('pot', 0)
+            current_bet = message.get('current_bet', 0)
 
             action_text = f"{action}"
             if amount > 0:
                 action_text += f" {amount}"
 
             print(f"🎮 {player_id}: {action_text}")
+            if pot > 0:
+                print(f"🏦 Банк: {pot}")
+            if current_bet > 0:
+                print(f"📈 Текущая ставка: {current_bet}")
+
+        elif msg_type == 'phase_changed':
+            phase = message.get('phase')
+            self.community_cards = message.get('community_cards', [])
+
+            print(f"\n🔄 {message.get('message')}")
+            if self.community_cards:
+                print(f"🃏 Новые карты на столе: {', '.join(self.community_cards)}")
+
+        elif msg_type == 'your_turn':
+            self.my_turn = True
+            print(f"\n🎯 {message.get('message')}")
+            print(f"💰 Ваши фишки: {self.chips}")
+            print(f"🏦 Банк: {self.pot}")
+            if self.current_bet > 0:
+                print(f"📈 Текущая ставка: {self.current_bet}")
+            print("💡 Доступные действия: fold, check, call, bet <сумма>, raise <сумма>")
+
+        elif msg_type == 'game_result':
+            winners = message.get('winners', [])
+            pot = message.get('pot', 0)
+
+            print(f"\n🏁 {message.get('message')}")
+            print(f"🏦 Банк: {pot}")
+            if self.player_id in winners:
+                if len(winners) == 1:
+                    print("🎉 ПОЗДРАВЛЯЕМ! ВЫ ПОБЕДИЛИ!")
+                else:
+                    print("🎉 ПОЗДРАВЛЯЕМ! ВЫ В НИЧЬЕЙ!")
+            else:
+                if len(winners) == 1:
+                    print(f"😔 Победил {winners[0]}")
+                else:
+                    print(f"😔 Ничья между: {', '.join(winners)}")
+
+        elif msg_type == 'game_can_restart':
+            print(f"💡 {message.get('message')}")
 
         elif msg_type == 'chat_message':
             player_id = message.get('player_id')
@@ -187,6 +254,11 @@ class PokerClient:
             print("❌ Сначала присоединитесь к игре")
             return False
 
+        if not self.my_turn:
+            print("❌ Сейчас не ваш ход")
+            return False
+
+        self.my_turn = False
         return await self.send_message({
             'type': 'player_action',
             'game_id': self.game_id,
@@ -221,9 +293,16 @@ class PokerClient:
         # Основной цикл взаимодействия
         while self.connected:
             try:
-                user_input = await asyncio.get_event_loop().run_in_executor(
-                    None, input, "\nВведите команду (help для справки): "
-                )
+                if self.my_turn:
+                    # Если наш ход, показываем специальное приглашение
+                    user_input = await asyncio.get_event_loop().run_in_executor(
+                        None, input, "\n🎯 Ваш ход! Введите действие: "
+                    )
+                else:
+                    # Обычное приглашение
+                    user_input = await asyncio.get_event_loop().run_in_executor(
+                        None, input, "\nВведите команду (help для справки): "
+                    )
 
                 command = user_input.strip().lower()
 
@@ -250,8 +329,15 @@ class PokerClient:
                     else:
                         print("❌ Укажите текст сообщения")
 
-                elif command in ['fold', 'check', 'call']:
-                    await self.send_action(command)
+                # Игровые действия
+                elif command == 'fold':
+                    await self.send_action('fold')
+
+                elif command == 'check':
+                    await self.send_action('check')
+
+                elif command == 'call':
+                    await self.send_action('call')
 
                 elif command.startswith('bet '):
                     try:
@@ -268,9 +354,7 @@ class PokerClient:
                         print("❌ Укажите сумму повышения: raise 50")
 
                 elif command == 'status':
-                    print(f"👤 ID игрока: {self.player_id}")
-                    print(f"🎮 ID игры: {self.game_id or 'Нет'}")
-                    print(f"🔗 Подключен: {'Да' if self.connected else 'Нет'}")
+                    self.show_status()
 
                 elif command in ['quit', 'exit']:
                     break
@@ -289,6 +373,19 @@ class PokerClient:
 
         self.connected = False
 
+    def show_status(self):
+        """Показать текущий статус"""
+        print(f"👤 ID игрока: {self.player_id}")
+        print(f"🎮 ID игры: {self.game_id or 'Нет'}")
+        print(f"🔗 Подключен: {'Да' if self.connected else 'Нет'}")
+        print(f"🎯 Мой ход: {'Да' if self.my_turn else 'Нет'}")
+        print(f"💰 Фишки: {self.chips}")
+        print(f"🏦 Банк: {self.pot}")
+        if self.my_cards:
+            print(f"🃏 Мои карты: {', '.join(self.my_cards)}")
+        if self.community_cards:
+            print(f"🃏 Карты на столе: {', '.join(self.community_cards)}")
+
     def show_help(self):
         """Показать справку по командам"""
         print("\n📖 Доступные команды:")
@@ -296,11 +393,13 @@ class PokerClient:
         print("  join <id>       - Присоединиться к игре (например: join game_1)")
         print("  ready           - Отметить готовность к игре")
         print("  chat <text>     - Отправить сообщение в чат")
+        print("\n🎮 Игровые действия (только когда ваш ход):")
         print("  fold            - Сбросить карты")
-        print("  check           - Пропустить ход")
-        print("  call            - Уравнять ставку")
+        print("  check           - Пропустить ход (если нет ставок)")
+        print("  call            - Уравнять текущую ставку")
         print("  bet <amount>    - Сделать ставку")
         print("  raise <amount>  - Поднять ставку")
+        print("\n⚙️  Системные команды:")
         print("  status          - Показать статус")
         print("  ping            - Проверить соединение")
         print("  quit            - Выйти из игры")
