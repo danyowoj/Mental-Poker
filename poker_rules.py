@@ -286,6 +286,23 @@ class HandEvaluator:
 
         return 0
 
+    @staticmethod
+    def get_combination_name(combination_type):
+        """Возвращает читаемое название комбинации"""
+        names = {
+            HandEvaluator.HIGH_CARD: "Старшая карта",
+            HandEvaluator.PAIR: "Пара",
+            HandEvaluator.TWO_PAIR: "Две пары",
+            HandEvaluator.THREE_OF_A_KIND: "Сет",
+            HandEvaluator.STRAIGHT: "Стрит",
+            HandEvaluator.FLUSH: "Флеш",
+            HandEvaluator.FULL_HOUSE: "Фулл-хаус",
+            HandEvaluator.FOUR_OF_A_KIND: "Каре",
+            HandEvaluator.STRAIGHT_FLUSH: "Стрит-флеш",
+            HandEvaluator.ROYAL_FLUSH: "Флеш-рояль"
+        }
+        return names.get(combination_type, "Неизвестная комбинация")
+
 
 class PokerGame:
     """Класс управления игрой в покер"""

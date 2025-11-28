@@ -167,6 +167,7 @@ class PokerClient:
         elif msg_type == 'your_turn':
             self.my_turn = True
             print(f"\n🎯 {message.get('message')}")
+            print(f"🃏 Ваши карты: {', '.join(self.my_cards)}")  # Показываем карты на каждом ходе
             print(f"💰 Ваши фишки: {self.chips}")
             print(f"🏦 Банк: {self.pot}")
             if self.current_bet > 0:
@@ -176,9 +177,20 @@ class PokerClient:
         elif msg_type == 'game_result':
             winners = message.get('winners', [])
             pot = message.get('pot', 0)
+            player_combinations = message.get('player_combinations', {})
 
             print(f"\n🏁 {message.get('message')}")
             print(f"🏦 Банк: {pot}")
+
+            # Показываем комбинацию текущего игрока
+            if self.player_id in player_combinations:
+                print(f"🃏 Ваша комбинация: {player_combinations[self.player_id]}")
+
+            # Показываем комбинации победителей
+            for winner in winners:
+                if winner in player_combinations and winner != self.player_id:
+                    print(f"🃏 Комбинация {winner}: {player_combinations[winner]}")
+
             if self.player_id in winners:
                 if len(winners) == 1:
                     print("🎉 ПОЗДРАВЛЯЕМ! ВЫ ПОБЕДИЛИ!")

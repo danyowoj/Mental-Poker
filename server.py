@@ -123,6 +123,7 @@ class PokerServer:
 
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}")
+            traceback.print_exc()  # Добавим вывод полной трассировки
             await self.send_error(player_id, f"Ошибка обработки: {str(e)}")
 
     async def handle_create_game(self, player_id, message):
@@ -144,7 +145,8 @@ class PokerServer:
             'pot': 0,
             'current_bet': 0,
             'player_data': {},  # Данные игроков: фишки, текущая ставка, статус
-            'player_cards': {}  # Карты игроков
+            'player_cards': {},  # Карты игроков
+            'deck': []  # Колода карт
         }
 
         # Инициализируем данные игрока
@@ -403,21 +405,21 @@ class PokerServer:
             game['phase'] = 'flop'
             # Выкладываем 3 карты на флоп
             if len(game['deck']) >= 3:
-                game['community_cards'] = game['deck'][:3]
+                game['community_cards'] = [str(card) for card in game['deck'][:3]]
                 game['deck'] = game['deck'][3:]
 
         elif game['phase'] == 'flop':
             game['phase'] = 'turn'
             # Выкладываем 4-ю карту
             if len(game['deck']) >= 1:
-                game['community_cards'].append(game['deck'][0])
+                game['community_cards'].append(str(game['deck'][0]))
                 game['deck'] = game['deck'][1:]
 
         elif game['phase'] == 'turn':
             game['phase'] = 'river'
             # Выкладываем 5-ю карту
             if len(game['deck']) >= 1:
-                game['community_cards'].append(game['deck'][0])
+                game['community_cards'].append(str(game['deck'][0]))
                 game['deck'] = game['deck'][1:]
 
         elif game['phase'] == 'river':
@@ -442,61 +444,10 @@ class PokerServer:
 
         logger.info(f"🔄 Игра {game_id} перешла к фазе: {game['phase']}")
 
-    def evaluate_hand(self, player_cards, community_cards):
-        """Оценка силы руки игрока"""
-        # Простая система оценки для демонстрации
-        # В реальной игре здесь должна быть сложная логика оценки покерных рук
-
-        # Создаем полный набор карт
-        all_cards = player_cards + community_cards
-
-        # Преобразуем карты в числовые значения для оценки
-        card_values = []
-        for card in all_cards:
-            rank = card[0]
-            if rank == 'A':
-                card_values.append(14)
-            elif rank == 'K':
-                card_values.append(13)
-            elif rank == 'Q':
-                card_values.append(12)
-            elif rank == 'J':
-                card_values.append(11)
-            elif rank == '1':  # 10
-                card_values.append(10)
-            else:
-                card_values.append(int(rank))
-
-        # Сортируем по убыванию
-        card_values.sort(reverse=True)
-
-        # Проверяем комбинации (упрощенная версия)
-        # 1. Пара
-        pairs = []
-        for i in range(len(card_values)):
-            for j in range(i+1, len(card_values)):
-                if card_values[i] == card_values[j]:
-                    pairs.append(card_values[i])
-
-        # 2. Две пары
-        if len(pairs) >= 2:
-            return (2, max(pairs))  # Возвращаем силу двух пар
-
-        # 3. Сет (три карты одного достоинства)
-        for i in range(len(card_values)):
-            count = card_values.count(card_values[i])
-            if count >= 3:
-                return (3, card_values[i])
-
-        # 4. Пара
-        if len(pairs) >= 1:
-            return (1, pairs[0])
-
-        # 5. Старшая карта
-        return (0, max(card_values))
-
     async def end_game(self, game_id):
-        """Завершение игры и определение победителя"""
+        """Завершение игры и определение победителя с использованием poker_rules"""
+        from poker_rules import HandEvaluator
+
         game = self.games[game_id]
 
         # Находим активных игроков (не сбросивших карты)
@@ -506,34 +457,64 @@ class PokerServer:
             # Все сбросили карты - победителя нет
             winner_message = "Все игроки сбросили карты - победителя нет"
             winners = []
+            player_combinations = {}
         elif len(active_players) == 1:
             # Один активный игрок - он победитель
             winner = active_players[0]
             game['player_data'][winner]['chips'] += game['pot']
             winner_message = f"Победитель: {winner} (единственный активный игрок)"
             winners = [winner]
+
+            # Получаем комбинацию победителя
+            player_cards = game['player_cards'][winner]
+            community_cards_objs = [self._parse_card(card_str) for card_str in game['community_cards']]
+            all_cards = player_cards + community_cards_objs
+            score = HandEvaluator.evaluate_hand(all_cards)
+            combination_name = self._get_combination_name(score[0])
+            player_combinations = {winner: combination_name}
         else:
-            # Определяем победителя по силе комбинации
-            best_hand = None
-            winners = []
+            # Определяем победителя по силе комбинации с использованием poker_rules
+            best_players = []
+            best_score = None
+            player_combinations = {}
+            player_scores = {}
 
+            # Оцениваем руки всех активных игроков
             for player_id in active_players:
-                player_hand = self.evaluate_hand(
-                    game['player_cards'][player_id],
-                    game['community_cards']
-                )
+                player_cards = game['player_cards'][player_id]
+                community_cards_objs = [self._parse_card(card_str) for card_str in game['community_cards']]
+                all_cards = player_cards + community_cards_objs
 
-                if best_hand is None or player_hand > best_hand:
-                    best_hand = player_hand
-                    winners = [player_id]
-                elif player_hand == best_hand:
-                    winners.append(player_id)
+                score = HandEvaluator.evaluate_hand(all_cards)
+                combination_name = self._get_combination_name(score[0])
+                player_combinations[player_id] = combination_name
+                player_scores[player_id] = score
+
+                if best_score is None:
+                    best_score = score
+                    best_players = [player_id]
+                else:
+                    # Сравниваем с текущим лучшим игроком
+                    best_player_cards = game['player_cards'][best_players[0]] + community_cards_objs
+                    comparison = HandEvaluator.compare_hands(best_player_cards, all_cards)
+
+                    if comparison == -1:  # Текущий игрок сильнее
+                        best_score = score
+                        best_players = [player_id]
+                    elif comparison == 0:  # Ничья
+                        best_players.append(player_id)
+
+            winners = best_players
 
             # Делим банк между победителями
             if winners:
                 split_pot = game['pot'] // len(winners)
-                for winner in winners:
-                    game['player_data'][winner]['chips'] += split_pot
+                remainder = game['pot'] % len(winners)  # Остаток от деления
+
+                for i, winner in enumerate(winners):
+                    # Первый игрок получает остаток, чтобы общая сумма не изменилась
+                    amount = split_pot + (1 if i < remainder else 0)
+                    game['player_data'][winner]['chips'] += amount
 
                 if len(winners) == 1:
                     winner_message = f"Победитель: {winners[0]}"
@@ -547,6 +528,7 @@ class PokerServer:
             'type': 'game_result',
             'winners': winners,
             'pot': game['pot'],
+            'player_combinations': player_combinations,
             'message': f'Игра завершена! {winner_message}'
         })
 
@@ -554,11 +536,12 @@ class PokerServer:
         game['status'] = 'waiting'
         game['phase'] = 'waiting'
         game['ready_players'] = set()
-        game['pot'] = 0  # Важно: обнуляем банк для новой раздачи
+        game['pot'] = 0
         game['current_bet'] = 0
         game['community_cards'] = []
         game['phase_actions'] = 0
-        game['player_cards'] = {}  # Очищаем карты игроков
+        game['player_cards'] = {}
+        game['deck'] = []
 
         # Сбрасываем состояние игроков (но сохраняем фишки)
         for player_id in game['players']:
@@ -573,6 +556,48 @@ class PokerServer:
             'type': 'game_can_restart',
             'message': 'Игра завершена! Введите "ready" для новой раздачи'
         })
+
+    def _parse_card(self, card_str):
+        """Преобразует строковое представление карты в объект Card"""
+        from poker_rules import Card
+
+        # Определяем масть
+        suit_symbol = card_str[-1]
+        suits = {'♠': 0, '♥': 1, '♦': 2, '♣': 3}
+        suit = suits.get(suit_symbol, 0)
+
+        # Определяем достоинство
+        rank_str = card_str[:-1]
+        if rank_str == 'A':
+            rank = 14
+        elif rank_str == 'K':
+            rank = 13
+        elif rank_str == 'Q':
+            rank = 12
+        elif rank_str == 'J':
+            rank = 11
+        else:
+            rank = int(rank_str)
+
+        return Card(rank, suit)
+
+    def _get_combination_name(self, combination_type):
+        """Возвращает читаемое название комбинации"""
+        from poker_rules import HandEvaluator
+
+        names = {
+            HandEvaluator.HIGH_CARD: "Старшая карта",
+            HandEvaluator.PAIR: "Пара",
+            HandEvaluator.TWO_PAIR: "Две пары",
+            HandEvaluator.THREE_OF_A_KIND: "Сет",
+            HandEvaluator.STRAIGHT: "Стрит",
+            HandEvaluator.FLUSH: "Флеш",
+            HandEvaluator.FULL_HOUSE: "Фулл-хаус",
+            HandEvaluator.FOUR_OF_A_KIND: "Каре",
+            HandEvaluator.STRAIGHT_FLUSH: "Стрит-флеш",
+            HandEvaluator.ROYAL_FLUSH: "Флеш-рояль"
+        }
+        return names.get(combination_type, "Неизвестная комбинация")
 
     async def handle_chat_message(self, player_id, message):
         """Обработка сообщения в чат"""
@@ -595,19 +620,21 @@ class PokerServer:
             })
 
     async def start_game(self, game_id):
-        """Начало игры"""
+        """Начало игры с использованием колоды из poker_rules"""
+        from deck_utils import Deck
+
         game = self.games[game_id]
         game['status'] = 'playing'
         game['phase'] = 'preflop'
-        game['pot'] = 0  # Важно: обнуляем банк для новой раздачи
+        game['pot'] = 0
         game['current_bet'] = 0
         game['phase_actions'] = 0
 
         logger.info(f"🎲 Начало игры {game_id}")
 
-        # Создаем и тасуем колоду
-        game['deck'] = self.create_deck()
-        random.shuffle(game['deck'])
+        # Создаем и тасуем колоду из deck_utils
+        deck = Deck()
+        game['deck'] = deck.cards
 
         # Сбрасываем состояние игроков
         for player_id in game['players']:
@@ -617,10 +644,14 @@ class PokerServer:
 
         # Раздаем карты
         player_cards = {}
-        for i, player_id in enumerate(game['players']):
-            # По 2 карты каждому игроку
-            if len(game['deck']) >= 2:
-                player_cards[player_id] = game['deck'][i*2:(i+1)*2]
+        cards_dealt = 0
+        for i in range(2):  # По 2 карты каждому игроку
+            for player_id in game['players']:
+                if len(game['deck']) > 0:
+                    if player_id not in player_cards:
+                        player_cards[player_id] = []
+                    player_cards[player_id].append(game['deck'].pop(0))
+                    cards_dealt += 1
 
         # Сохраняем карты игроков для определения победителя
         game['player_cards'] = player_cards
@@ -633,7 +664,7 @@ class PokerServer:
             await self.send_to_player(player_id, {
                 'type': 'game_started',
                 'game_id': game_id,
-                'your_cards': player_cards[player_id],
+                'your_cards': [str(card) for card in player_cards[player_id]],
                 'community_cards': [],
                 'players': game['players'],
                 'chips': game['player_data'][player_id]['chips']
@@ -654,18 +685,6 @@ class PokerServer:
         })
 
         print(f'🎲 Игра {game_id} началась с {len(game["players"])} игроками')
-
-    def create_deck(self):
-        """Создание простой колоды карт для демонстрации"""
-        suits = ['♠', '♥', '♦', '♣']
-        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-
-        deck = []
-        for suit in suits:
-            for rank in ranks:
-                deck.append(f"{rank}{suit}")
-
-        return deck
 
     async def broadcast_game_state(self, game_id):
         """Отправка текущего состояния игры всем игрокам"""
