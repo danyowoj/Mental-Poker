@@ -1,5 +1,5 @@
 """
-Упрощенный сервер для ментального покера с системой фишек и фазами игры
+Сервер ментального покера с криптографической защитой
 """
 
 import asyncio
@@ -8,13 +8,168 @@ import logging
 import random
 import traceback
 from typing import Dict, List, Optional
+import os
+import base64
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('PokerServer')
+logger = logging.getLogger('MentalPokerServer')
+
+class CryptoUtils:
+    """Криптографические утилиты для ментального покера"""
+
+    @staticmethod
+    def generate_rsa_keypair():
+        """Генерация пары RSA ключей"""
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        public_key = private_key.public_key()
+        return private_key, public_key
+
+    @staticmethod
+    def serialize_public_key(public_key):
+        """Сериализация открытого ключа в строку"""
+        pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        return base64.b64encode(pem).decode('utf-8')
+
+    @staticmethod
+    def deserialize_public_key(public_key_str):
+        """Десериализация открытого ключа из строки"""
+        pem = base64.b64decode(public_key_str.encode('utf-8'))
+        public_key = serialization.load_pem_public_key(pem, backend=default_backend())
+        return public_key
+
+    @staticmethod
+    def generate_aes_key():
+        """Генерация AES ключа"""
+        return os.urandom(32)  # 256-bit key
+
+    @staticmethod
+    def encrypt_aes(plaintext, key):
+        """Шифрование AES-GCM"""
+        iv = os.urandom(12)  # 96-bit IV для GCM
+        cipher = Cipher(algorithms.AES(key), modes.GCM(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        return iv + encryptor.tag + ciphertext
+
+    @staticmethod
+    def decrypt_aes(ciphertext, key):
+        """Расшифрование AES-GCM"""
+        if len(ciphertext) < 28:
+            raise ValueError("Неверный размер зашифрованных данных")
+
+        iv = ciphertext[:12]
+        tag = ciphertext[12:28]
+        actual_ciphertext = ciphertext[28:]
+
+        cipher = Cipher(algorithms.AES(key), modes.GCM(iv, tag), backend=default_backend())
+        decryptor = cipher.decryptor()
+        return decryptor.update(actual_ciphertext) + decryptor.finalize()
+
+    @staticmethod
+    def encrypt_rsa(plaintext, public_key):
+        """Шифрование RSA-OAEP"""
+        ciphertext = public_key.encrypt(
+            plaintext,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return ciphertext
+
+    @staticmethod
+    def decrypt_rsa(ciphertext, private_key):
+        """Расшифрование RSA-OAEP"""
+        plaintext = private_key.decrypt(
+            ciphertext,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return plaintext
+
+class MentalPokerDeck:
+    """Класс для управления зашифрованной колодой в ментальном покере"""
+
+    def __init__(self):
+        self.cards = []  # Список зашифрованных карт
+        self.encryption_keys = []  # Ключи шифрования для каждой карты
+        self.player_keys = {}  # Открытые ключи игроков
+        self.deck_commitment = None  # Обязательство колоды для верификации
+        self.card_mapping = {}  # Сопоставление: зашифрованная карта -> исходная карта
+
+    def add_player_key(self, player_id, public_key):
+        """Добавление открытого ключа игрока"""
+        self.player_keys[player_id] = public_key
+
+    def prepare_deck(self, standard_deck):
+        """Подготовка зашифрованной колоды с сохранением маппинга"""
+        self.cards = []
+        self.encryption_keys = []
+        self.card_mapping = {}
+
+        for card in standard_deck:
+            # Генерация симметричного ключа для карты
+            aes_key = CryptoUtils.generate_aes_key()
+            self.encryption_keys.append(aes_key)
+
+            # Шифрование карты
+            card_data = card.encode('utf-8')
+            encrypted_card = CryptoUtils.encrypt_aes(card_data, aes_key)
+            encrypted_card_str = base64.b64encode(encrypted_card).decode('utf-8')
+            self.cards.append(encrypted_card_str)
+
+            # Сохраняем маппинг для отладки и тестирования
+            self.card_mapping[encrypted_card_str] = card
+
+        # Создание обязательства колоды
+        import json
+        deck_hash = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        deck_hash.update(json.dumps(self.cards).encode('utf-8'))
+        self.deck_commitment = base64.b64encode(deck_hash.finalize()).decode('utf-8')
+
+        return self.cards
+
+    def encrypt_keys_for_player(self, player_id, card_indices=None):
+        """Шифрование ключей для конкретного игрока"""
+        if player_id not in self.player_keys:
+            raise ValueError(f"Ключ игрока {player_id} не найден")
+
+        player_public_key = self.player_keys[player_id]
+        encrypted_keys = []
+
+        if card_indices is None:
+            # Шифруем все ключи
+            keys_to_encrypt = self.encryption_keys
+        else:
+            # Шифруем только указанные ключи
+            keys_to_encrypt = [self.encryption_keys[i] for i in card_indices if i < len(self.encryption_keys)]
+
+        for aes_key in keys_to_encrypt:
+            # Шифрование AES ключа открытым ключом игрока
+            encrypted_key = CryptoUtils.encrypt_rsa(aes_key, player_public_key)
+            encrypted_keys.append(base64.b64encode(encrypted_key).decode('utf-8'))
+
+        return encrypted_keys
 
 class PokerServer:
     def __init__(self, host='localhost', port=8888):
@@ -56,7 +211,9 @@ class PokerServer:
         self.players[player_id] = {
             'reader': reader,
             'writer': writer,
-            'address': client_addr
+            'address': client_addr,
+            'public_key': None,
+            'key_verified': False
         }
 
         try:
@@ -118,20 +275,72 @@ class PokerServer:
                 await self.handle_chat_message(player_id, message)
             elif msg_type == 'ping':
                 await self.send_to_player(player_id, {'type': 'pong'})
+            elif msg_type == 'exchange_public_key':
+                await self.handle_exchange_public_key(player_id, message)
+            elif msg_type == 'verify_deck':
+                await self.handle_verify_deck(player_id, message)
             else:
                 await self.send_error(player_id, f"Неизвестный тип сообщения: {msg_type}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}")
-            traceback.print_exc()  # Добавим вывод полной трассировки
+            traceback.print_exc()
             await self.send_error(player_id, f"Ошибка обработки: {str(e)}")
 
+    async def handle_exchange_public_key(self, player_id, message):
+        """Обработка обмена открытыми ключами"""
+        public_key_str = message.get('public_key')
+
+        if not public_key_str:
+            await self.send_error(player_id, "Отсутствует открытый ключ")
+            return
+
+        try:
+            # Сохраняем открытый ключ игрока
+            public_key = CryptoUtils.deserialize_public_key(public_key_str)
+            self.players[player_id]['public_key'] = public_key
+            self.players[player_id]['key_verified'] = True
+
+            logger.info(f"🔑 Игрок {player_id} предоставил открытый ключ")
+
+            # Отправляем подтверждение
+            await self.send_to_player(player_id, {
+                'type': 'public_key_accepted',
+                'message': 'Открытый ключ принят'
+            })
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки ключа игрока {player_id}: {e}")
+            await self.send_error(player_id, f"Ошибка обработки ключа: {str(e)}")
+
+    async def handle_verify_deck(self, player_id, message):
+        """Обработка верификации колоды"""
+        game_id = message.get('game_id')
+
+        if game_id not in self.games:
+            await self.send_error(player_id, "Игра не найдена")
+            return
+
+        game = self.games[game_id]
+
+        if player_id not in game['players']:
+            await self.send_error(player_id, "Вы не в этой игре")
+            return
+
+        # Отправляем информацию для верификации колоды
+        await self.send_to_player(player_id, {
+            'type': 'deck_verification',
+            'deck_commitment': game['mental_deck'].deck_commitment,
+            'encrypted_cards': game['mental_deck'].cards,
+            'message': 'Информация для верификации колоды'
+        })
+
     async def handle_create_game(self, player_id, message):
-        """Создание новой игры"""
+        """Создание новой игры с ментальным покером"""
         self.game_counter += 1
         game_id = f"game_{self.game_counter}"
 
-        # Создаем новую игру
+        # Создаем новую игру с криптографической колодой
         self.games[game_id] = {
             'id': game_id,
             'players': [player_id],
@@ -140,18 +349,23 @@ class PokerServer:
             'ready_players': set(),
             'current_player_index': 0,
             'phase': 'waiting',
-            'phase_actions': 0,  # Счетчик действий в текущей фазе
+            'phase_actions': 0,
             'community_cards': [],
+            'encrypted_community_cards': [],
             'pot': 0,
             'current_bet': 0,
-            'player_data': {},  # Данные игроков: фишки, текущая ставка, статус
-            'player_cards': {},  # Карты игроков
-            'deck': []  # Колода карт
+            'player_data': {},
+            'player_cards': {},
+            'encrypted_player_cards': {},
+            'deck': [],
+            'original_deck': [],
+            'mental_deck': MentalPokerDeck(),
+            'keys_distributed': False
         }
 
         # Инициализируем данные игрока
         self.games[game_id]['player_data'][player_id] = {
-            'chips': 1000,  # Начальные фишки
+            'chips': 1000,
             'current_bet': 0,
             'folded': False,
             'acted_this_phase': False
@@ -182,7 +396,7 @@ class PokerServer:
             await self.send_error(player_id, "Вы уже в этой игре")
             return
 
-        if len(game['players']) >= 6:  # Максимум 6 игроков
+        if len(game['players']) >= 6:
             await self.send_error(player_id, "Игра заполнена")
             return
 
@@ -191,7 +405,7 @@ class PokerServer:
 
         # Инициализируем данные нового игрока
         game['player_data'][player_id] = {
-            'chips': 1000,  # Начальные фишки
+            'chips': 1000,
             'current_bet': 0,
             'folded': False,
             'acted_this_phase': False
@@ -228,6 +442,11 @@ class PokerServer:
 
         if player_id not in game['players']:
             await self.send_error(player_id, "Вы не в этой игре")
+            return
+
+        # Проверяем, что игрок предоставил открытый ключ
+        if not self.players[player_id].get('key_verified', False):
+            await self.send_error(player_id, "Сначала предоставьте открытый ключ")
             return
 
         # Отмечаем игрока как готового
@@ -274,7 +493,6 @@ class PokerServer:
             game['phase_actions'] += 1
 
         elif action == 'check':
-            # Проверяем, можно ли сделать чек (текущая ставка = 0)
             if game['current_bet'] > 0:
                 await self.send_error(player_id, "Нельзя сделать чек, есть текущая ставка")
                 return
@@ -282,7 +500,6 @@ class PokerServer:
             game['phase_actions'] += 1
 
         elif action == 'call':
-            # Уравниваем текущую ставку
             call_amount = game['current_bet'] - player_data['current_bet']
             if call_amount > player_data['chips']:
                 await self.send_error(player_id, "Недостаточно фишек")
@@ -372,11 +589,9 @@ class PokerServer:
             game['current_player_index'] = (game['current_player_index'] + 1) % len(game['players'])
             next_player = game['players'][game['current_player_index']]
 
-            # Если игрок не сбросил карты, это следующий игрок
             if not game['player_data'][next_player]['folded']:
                 break
 
-            # Если мы прошли полный круг, выходим
             if game['current_player_index'] == start_index:
                 break
 
@@ -400,38 +615,45 @@ class PokerServer:
             game['player_data'][player_id]['current_bet'] = 0
             game['player_data'][player_id]['acted_this_phase'] = False
 
-        # Переходим к следующей фазе
+        # Переходим к следующей фазе и раскрываем общие карты
+        cards_to_reveal = 0
         if game['phase'] == 'preflop':
             game['phase'] = 'flop'
-            # Выкладываем 3 карты на флоп
-            if len(game['deck']) >= 3:
-                game['community_cards'] = [str(card) for card in game['deck'][:3]]
-                game['deck'] = game['deck'][3:]
-
+            cards_to_reveal = 3
         elif game['phase'] == 'flop':
             game['phase'] = 'turn'
-            # Выкладываем 4-ю карту
-            if len(game['deck']) >= 1:
-                game['community_cards'].append(str(game['deck'][0]))
-                game['deck'] = game['deck'][1:]
-
+            cards_to_reveal = 1
         elif game['phase'] == 'turn':
             game['phase'] = 'river'
-            # Выкладываем 5-ю карту
-            if len(game['deck']) >= 1:
-                game['community_cards'].append(str(game['deck'][0]))
-                game['deck'] = game['deck'][1:]
-
+            cards_to_reveal = 1
         elif game['phase'] == 'river':
             # Завершаем игру
             await self.end_game(game_id)
             return
+
+        # Раскрываем общие карты
+        if len(game['original_deck']) >= cards_to_reveal:
+            new_community_cards = []
+            encrypted_community_cards = []
+
+            for i in range(cards_to_reveal):
+                if game['original_deck']:
+                    card = game['original_deck'].pop(0)
+                    new_community_cards.append(card)
+
+                if game['deck']:
+                    encrypted_card = game['deck'].pop(0)
+                    encrypted_community_cards.append(encrypted_card)
+                    game['encrypted_community_cards'].append(encrypted_card)
+
+            game['community_cards'].extend(new_community_cards)
 
         # Уведомляем о смене фазы
         await self.broadcast_to_game(game_id, {
             'type': 'phase_changed',
             'phase': game['phase'],
             'community_cards': game['community_cards'],
+            'encrypted_community_cards': encrypted_community_cards,
             'message': f'Фаза изменена: {game["phase"]}'
         })
 
@@ -445,7 +667,7 @@ class PokerServer:
         logger.info(f"🔄 Игра {game_id} перешла к фазе: {game['phase']}")
 
     async def end_game(self, game_id):
-        """Завершение игры и определение победителя с использованием poker_rules"""
+        """Завершение игры с определением победителя"""
         from poker_rules import HandEvaluator
 
         game = self.games[game_id]
@@ -454,49 +676,41 @@ class PokerServer:
         active_players = [p for p in game['players'] if not game['player_data'][p]['folded']]
 
         if len(active_players) == 0:
-            # Все сбросили карты - победителя нет
             winner_message = "Все игроки сбросили карты - победителя нет"
             winners = []
             player_combinations = {}
         elif len(active_players) == 1:
-            # Один активный игрок - он победитель
             winner = active_players[0]
             game['player_data'][winner]['chips'] += game['pot']
             winner_message = f"Победитель: {winner} (единственный активный игрок)"
             winners = [winner]
-
-            # Получаем комбинацию победителя
-            player_cards = game['player_cards'][winner]
-            community_cards_objs = [self._parse_card(card_str) for card_str in game['community_cards']]
-            all_cards = player_cards + community_cards_objs
-            score = HandEvaluator.evaluate_hand(all_cards)
-            combination_name = self._get_combination_name(score[0])
-            player_combinations = {winner: combination_name}
+            player_combinations = {winner: "Единственный активный игрок"}
         else:
-            # Определяем победителя по силе комбинации с использованием poker_rules
+            # Определяем победителя по силе комбинации
             best_players = []
             best_score = None
             player_combinations = {}
-            player_scores = {}
 
             # Оцениваем руки всех активных игроков
             for player_id in active_players:
-                player_cards = game['player_cards'][player_id]
-                community_cards_objs = [self._parse_card(card_str) for card_str in game['community_cards']]
-                all_cards = player_cards + community_cards_objs
+                player_cards = [self._parse_card(card) for card in game['player_cards'][player_id]]
+                community_cards = [self._parse_card(card) for card in game['community_cards']]
+                all_cards = player_cards + community_cards
 
                 score = HandEvaluator.evaluate_hand(all_cards)
                 combination_name = self._get_combination_name(score[0])
                 player_combinations[player_id] = combination_name
-                player_scores[player_id] = score
 
                 if best_score is None:
                     best_score = score
                     best_players = [player_id]
                 else:
-                    # Сравниваем с текущим лучшим игроком
-                    best_player_cards = game['player_cards'][best_players[0]] + community_cards_objs
-                    comparison = HandEvaluator.compare_hands(best_player_cards, all_cards)
+                    # Сравниваем руки
+                    best_player_cards = [self._parse_card(card) for card in game['player_cards'][best_players[0]]]
+                    best_player_full = best_player_cards + [self._parse_card(card) for card in game['community_cards']]
+
+                    # Создаем временные объекты для сравнения
+                    comparison = HandEvaluator.compare_hands(best_player_full, all_cards)
 
                     if comparison == -1:  # Текущий игрок сильнее
                         best_score = score
@@ -509,10 +723,9 @@ class PokerServer:
             # Делим банк между победителями
             if winners:
                 split_pot = game['pot'] // len(winners)
-                remainder = game['pot'] % len(winners)  # Остаток от деления
+                remainder = game['pot'] % len(winners)
 
                 for i, winner in enumerate(winners):
-                    # Первый игрок получает остаток, чтобы общая сумма не изменилась
                     amount = split_pot + (1 if i < remainder else 0)
                     game['player_data'][winner]['chips'] += amount
 
@@ -529,6 +742,7 @@ class PokerServer:
             'winners': winners,
             'pot': game['pot'],
             'player_combinations': player_combinations,
+            'player_cards': game['player_cards'],
             'message': f'Игра завершена! {winner_message}'
         })
 
@@ -539,11 +753,16 @@ class PokerServer:
         game['pot'] = 0
         game['current_bet'] = 0
         game['community_cards'] = []
+        game['encrypted_community_cards'] = []
         game['phase_actions'] = 0
         game['player_cards'] = {}
+        game['encrypted_player_cards'] = {}
         game['deck'] = []
+        game['original_deck'] = []
+        game['mental_deck'] = MentalPokerDeck()
+        game['keys_distributed'] = False
 
-        # Сбрасываем состояние игроков (но сохраняем фишки)
+        # Сбрасываем состояние игроков
         for player_id in game['players']:
             game['player_data'][player_id]['current_bet'] = 0
             game['player_data'][player_id]['folded'] = False
@@ -561,12 +780,10 @@ class PokerServer:
         """Преобразует строковое представление карты в объект Card"""
         from poker_rules import Card
 
-        # Определяем масть
         suit_symbol = card_str[-1]
         suits = {'♠': 0, '♥': 1, '♦': 2, '♣': 3}
         suit = suits.get(suit_symbol, 0)
 
-        # Определяем достоинство
         rank_str = card_str[:-1]
         if rank_str == 'A':
             rank = 14
@@ -576,6 +793,8 @@ class PokerServer:
             rank = 12
         elif rank_str == 'J':
             rank = 11
+        elif rank_str == '10':
+            rank = 10
         else:
             rank = int(rank_str)
 
@@ -605,14 +824,12 @@ class PokerServer:
         text = message.get('text', '')
 
         if game_id and game_id in self.games:
-            # Сообщение в игровой чат
             await self.broadcast_to_game(game_id, {
                 'type': 'chat_message',
                 'player_id': player_id,
                 'text': text
             })
         else:
-            # Глобальное сообщение
             await self.broadcast_to_all({
                 'type': 'chat_message',
                 'player_id': player_id,
@@ -620,8 +837,15 @@ class PokerServer:
             })
 
     async def start_game(self, game_id):
-        """Начало игры с использованием колоды из poker_rules"""
-        from deck_utils import Deck
+        """Начало игры"""
+        # Создаем простую колоду карт
+        suits = ['♠', '♥', '♦', '♣']
+        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+
+        standard_cards = []
+        for suit in suits:
+            for rank in ranks:
+                standard_cards.append(f"{rank}{suit}")
 
         game = self.games[game_id]
         game['status'] = 'playing'
@@ -630,11 +854,24 @@ class PokerServer:
         game['current_bet'] = 0
         game['phase_actions'] = 0
 
-        logger.info(f"🎲 Начало игры {game_id}")
+        logger.info(f"🎲 Начало игры {game_id} с ментальным покером")
 
-        # Создаем и тасуем колоду из deck_utils
-        deck = Deck()
-        game['deck'] = deck.cards
+        # Перемешиваем стандартные карты
+        random.shuffle(standard_cards)
+        game['original_deck'] = standard_cards.copy()
+
+        # Добавляем открытые ключи всех игроков в криптографическую колоду
+        mental_deck = game['mental_deck']
+        for player_id in game['players']:
+            if self.players[player_id]['public_key']:
+                mental_deck.add_player_key(player_id, self.players[player_id]['public_key'])
+
+        # Подготавливаем зашифрованную колоду
+        encrypted_cards = mental_deck.prepare_deck(standard_cards)
+        game['deck'] = encrypted_cards.copy()
+
+        # Перемешиваем зашифрованную колоду
+        random.shuffle(game['deck'])
 
         # Сбрасываем состояние игроков
         for player_id in game['players']:
@@ -642,33 +879,54 @@ class PokerServer:
             game['player_data'][player_id]['folded'] = False
             game['player_data'][player_id]['acted_this_phase'] = False
 
-        # Раздаем карты
-        player_cards = {}
-        cards_dealt = 0
-        for i in range(2):  # По 2 карты каждому игроку
+        # Раздаем карты игрокам
+        player_encrypted_cards = {}
+        player_open_cards = {}
+
+        # Раздаем по 2 карты каждому игроку
+        for i in range(2):
             for player_id in game['players']:
-                if len(game['deck']) > 0:
-                    if player_id not in player_cards:
-                        player_cards[player_id] = []
-                    player_cards[player_id].append(game['deck'].pop(0))
-                    cards_dealt += 1
+                if game['original_deck'] and game['deck']:
+                    if player_id not in player_encrypted_cards:
+                        player_encrypted_cards[player_id] = []
+                        player_open_cards[player_id] = []
 
-        # Сохраняем карты игроков для определения победителя
-        game['player_cards'] = player_cards
+                    # Берем карту из оригинальной колоды
+                    open_card = game['original_deck'].pop(0)
+                    player_open_cards[player_id].append(open_card)
 
-        # Инициализируем общие карты
-        game['community_cards'] = []
+                    # Берем зашифрованную карту
+                    encrypted_card = game['deck'].pop(0)
+                    player_encrypted_cards[player_id].append(encrypted_card)
 
-        # Отправляем начальное состояние игры
+        game['encrypted_player_cards'] = player_encrypted_cards
+        game['player_cards'] = player_open_cards
+
+        # Отправляем игрокам их открытые и зашифрованные карты
         for player_id in game['players']:
+            # Получаем ключи для карт игрока
+            encrypted_keys = mental_deck.encrypt_keys_for_player(player_id)
+
+            # Отправляем начальное состояние игры
             await self.send_to_player(player_id, {
                 'type': 'game_started',
                 'game_id': game_id,
-                'your_cards': [str(card) for card in player_cards[player_id]],
+                'your_cards': player_open_cards[player_id],
+                'encrypted_cards': player_encrypted_cards[player_id],
+                'encrypted_keys': encrypted_keys[:2],
                 'community_cards': [],
                 'players': game['players'],
-                'chips': game['player_data'][player_id]['chips']
+                'chips': game['player_data'][player_id]['chips'],
+                'deck_commitment': mental_deck.deck_commitment,
+                'message': 'Игра началась! Ваши карты зашифрованы.'
             })
+
+        # Уведомляем о начале игры
+        await self.broadcast_to_game(game_id, {
+            'type': 'game_state',
+            'phase': 'preflop',
+            'message': 'Игра началась! Фаза: Pre-flop'
+        })
 
         # Уведомляем первого игрока о его ходе
         game['current_player_index'] = 0
@@ -676,12 +934,6 @@ class PokerServer:
         await self.send_to_player(first_player, {
             'type': 'your_turn',
             'message': 'Сейчас ваш ход! Введите действие (fold, check, call, bet, raise)'
-        })
-
-        await self.broadcast_to_game(game_id, {
-            'type': 'game_state',
-            'phase': 'preflop',
-            'message': 'Игра началась! Фаза: Pre-flop'
         })
 
         print(f'🎲 Игра {game_id} началась с {len(game["players"])} игроками')
