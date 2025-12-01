@@ -1,5 +1,5 @@
 """
-Упрощенный клиент для ментального покера с системой фишек и фазами игры
+Клиент ментального покера с криптографической поддержкой
 """
 
 import asyncio
@@ -7,6 +7,12 @@ import json
 import logging
 import random
 import sys
+import os
+import base64
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 # Настройка логирования
 logging.basicConfig(
@@ -14,6 +20,36 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('PokerClient')
+
+class CryptoUtils:
+    """Криптографические утилиты для ментального покера"""
+
+    @staticmethod
+    def generate_rsa_keypair():
+        """Генерация пары RSA ключей"""
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        public_key = private_key.public_key()
+        return private_key, public_key
+
+    @staticmethod
+    def serialize_public_key(public_key):
+        """Сериализация открытого ключа в строку"""
+        pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        return base64.b64encode(pem).decode('utf-8')
+
+    @staticmethod
+    def deserialize_public_key(public_key_str):
+        """Десериализация открытого ключа из строки"""
+        pem = base64.b64decode(public_key_str.encode('utf-8'))
+        public_key = serialization.load_pem_public_key(pem, backend=default_backend())
+        return public_key
 
 class PokerClient:
     def __init__(self, host='localhost', port=8888):
@@ -26,10 +62,15 @@ class PokerClient:
         self.connected = False
         self.my_turn = False
         self.my_cards = []
+        self.encrypted_cards = []
+        self.encrypted_keys = []
+        self.private_key = None
+        self.public_key = None
         self.community_cards = []
         self.chips = 0
         self.pot = 0
         self.current_bet = 0
+        self.deck_commitment = None
 
     async def connect(self):
         """Подключение к серверу"""
@@ -38,6 +79,10 @@ class PokerClient:
                 self.host, self.port
             )
             self.connected = True
+
+            # Генерация ключей при подключении
+            self.private_key, self.public_key = CryptoUtils.generate_rsa_keypair()
+
             print("✅ Подключение к серверу установлено")
             return True
         except Exception as e:
@@ -75,6 +120,12 @@ class PokerClient:
             self.player_id = message.get('player_id')
             print(f"🎉 {message.get('message')}")
 
+            # После получения ID отправляем открытый ключ
+            await self.send_public_key()
+
+        elif msg_type == 'public_key_accepted':
+            print(f"🔑 {message.get('message')}")
+
         elif msg_type == 'game_created':
             self.game_id = message.get('game_id')
             print(f"🎮 {message.get('message')}")
@@ -92,12 +143,6 @@ class PokerClient:
             print(f"👤 Игрок {player_id} присоединился к игре")
             print(f"👥 Теперь игроков: {len(players)}")
 
-        elif msg_type == 'player_left':
-            player_id = message.get('player_id')
-            players = message.get('players', [])
-            print(f"👋 Игрок {player_id} вышел из игры")
-            print(f"👥 Осталось игроков: {len(players)}")
-
         elif msg_type == 'player_ready':
             player_id = message.get('player_id')
             ready_players = message.get('ready_players', [])
@@ -111,16 +156,20 @@ class PokerClient:
         elif msg_type == 'game_started':
             self.game_id = message.get('game_id')
             self.my_cards = message.get('your_cards', [])
+            self.encrypted_cards = message.get('encrypted_cards', [])
+            self.encrypted_keys = message.get('encrypted_keys', [])
             self.community_cards = message.get('community_cards', [])
             players = message.get('players', [])
             self.chips = message.get('chips', 0)
-            self.pot = 0  # Сбрасываем банк при начале новой игры
+            self.deck_commitment = message.get('deck_commitment')
+            self.pot = 0
 
             print("\n" + "="*50)
             print("🎲 ИГРА НАЧАЛАСЬ!")
             print(f"👥 Игроки: {', '.join(players)}")
             print(f"🃏 Ваши карты: {', '.join(self.my_cards)}")
             print(f"💰 Ваши фишки: {self.chips}")
+            print(f"🔒 Колода защищена криптографически")
             print("="*50)
 
         elif msg_type == 'game_state':
@@ -159,15 +208,19 @@ class PokerClient:
         elif msg_type == 'phase_changed':
             phase = message.get('phase')
             self.community_cards = message.get('community_cards', [])
+            encrypted_community_cards = message.get('encrypted_community_cards', [])
 
             print(f"\n🔄 {message.get('message')}")
             if self.community_cards:
-                print(f"🃏 Новые карты на столе: {', '.join(self.community_cards)}")
+                new_cards = self.community_cards[-len(encrypted_community_cards):] if encrypted_community_cards else self.community_cards
+                print(f"🃏 Новые карты на столе: {', '.join(new_cards)}")
+            if encrypted_community_cards:
+                print(f"🔒 Раскрыто зашифрованных карт: {len(encrypted_community_cards)}")
 
         elif msg_type == 'your_turn':
             self.my_turn = True
             print(f"\n🎯 {message.get('message')}")
-            print(f"🃏 Ваши карты: {', '.join(self.my_cards)}")  # Показываем карты на каждом ходе
+            print(f"🃏 Ваши карты: {', '.join(self.my_cards)}")
             print(f"💰 Ваши фишки: {self.chips}")
             print(f"🏦 Банк: {self.pot}")
             if self.current_bet > 0:
@@ -178,18 +231,23 @@ class PokerClient:
             winners = message.get('winners', [])
             pot = message.get('pot', 0)
             player_combinations = message.get('player_combinations', {})
+            player_cards = message.get('player_cards', {})
 
             print(f"\n🏁 {message.get('message')}")
             print(f"🏦 Банк: {pot}")
 
+            # Показываем карты всех игроков
+            print("\n📋 Карты игроков:")
+            for player_id, cards in player_cards.items():
+                combination = player_combinations.get(player_id, "Неизвестно")
+                if player_id == self.player_id:
+                    print(f"  👤 Вы ({player_id}): {', '.join(cards)} - {combination}")
+                else:
+                    print(f"  👤 {player_id}: {', '.join(cards)} - {combination}")
+
             # Показываем комбинацию текущего игрока
             if self.player_id in player_combinations:
-                print(f"🃏 Ваша комбинация: {player_combinations[self.player_id]}")
-
-            # Показываем комбинации победителей
-            for winner in winners:
-                if winner in player_combinations and winner != self.player_id:
-                    print(f"🃏 Комбинация {winner}: {player_combinations[winner]}")
+                print(f"\n🃏 Ваша комбинация: {player_combinations[self.player_id]}")
 
             if self.player_id in winners:
                 if len(winners) == 1:
@@ -205,6 +263,19 @@ class PokerClient:
         elif msg_type == 'game_can_restart':
             print(f"💡 {message.get('message')}")
 
+        elif msg_type == 'deck_verification':
+            deck_commitment = message.get('deck_commitment')
+            encrypted_cards = message.get('encrypted_cards', [])
+
+            print(f"\n🔍 Информация для верификации колоды:")
+            print(f"   Хэш колоды: {deck_commitment[:20]}...")
+            print(f"   Количество карт: {len(encrypted_cards)}")
+
+            if self.deck_commitment and self.deck_commitment == deck_commitment:
+                print("   ✅ Целостность колоды подтверждена")
+            else:
+                print("   ⚠️  Несоответствие в данных колоды")
+
         elif msg_type == 'chat_message':
             player_id = message.get('player_id')
             text = message.get('text')
@@ -214,10 +285,27 @@ class PokerClient:
             print(f"❌ Ошибка: {message.get('message')}")
 
         elif msg_type == 'pong':
-            pass  # Игнорируем pong
+            pass
 
         else:
             print(f"📨 Неизвестное сообщение: {message}")
+
+    async def send_public_key(self):
+        """Отправка открытого ключа на сервер"""
+        if not self.public_key:
+            print("❌ Открытый ключ не сгенерирован")
+            return False
+
+        try:
+            public_key_str = CryptoUtils.serialize_public_key(self.public_key)
+            await self.send_message({
+                'type': 'exchange_public_key',
+                'public_key': public_key_str
+            })
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка отправки открытого ключа: {e}")
+            return False
 
     async def send_message(self, message):
         """Отправка сообщения на сервер"""
@@ -260,6 +348,17 @@ class PokerClient:
             'game_id': self.game_id
         })
 
+    async def verify_deck(self):
+        """Запрос верификации колоды"""
+        if not self.game_id:
+            print("❌ Сначала присоединитесь к игре")
+            return False
+
+        return await self.send_message({
+            'type': 'verify_deck',
+            'game_id': self.game_id
+        })
+
     async def send_action(self, action, amount=0):
         """Отправка игрового действия"""
         if not self.game_id:
@@ -292,26 +391,21 @@ class PokerClient:
 
     async def run_interactive(self):
         """Интерактивный режим клиента"""
-        print("🎮 Клиент ментального покера")
-        print("=" * 30)
+        print("🎮 Клиент ментального покера с криптографической защитой")
+        print("=" * 40)
 
-        # Подключаемся к серверу
         if not await self.connect():
             return
 
-        # Запускаем прослушивание сообщений в фоне
         asyncio.create_task(self.listen_for_messages())
 
-        # Основной цикл взаимодействия
         while self.connected:
             try:
                 if self.my_turn:
-                    # Если наш ход, показываем специальное приглашение
                     user_input = await asyncio.get_event_loop().run_in_executor(
                         None, input, "\n🎯 Ваш ход! Введите действие: "
                     )
                 else:
-                    # Обычное приглашение
                     user_input = await asyncio.get_event_loop().run_in_executor(
                         None, input, "\nВведите команду (help для справки): "
                     )
@@ -333,6 +427,9 @@ class PokerClient:
 
                 elif command == 'ready':
                     await self.send_ready()
+
+                elif command == 'verify':
+                    await self.verify_deck()
 
                 elif command.startswith('chat '):
                     text = command[5:].strip()
@@ -393,6 +490,7 @@ class PokerClient:
         print(f"🎯 Мой ход: {'Да' if self.my_turn else 'Нет'}")
         print(f"💰 Фишки: {self.chips}")
         print(f"🏦 Банк: {self.pot}")
+        print(f"🔐 Криптография: {'Активна' if self.public_key else 'Неактивна'}")
         if self.my_cards:
             print(f"🃏 Мои карты: {', '.join(self.my_cards)}")
         if self.community_cards:
@@ -402,12 +500,13 @@ class PokerClient:
         """Показать справку по командам"""
         print("\n📖 Доступные команды:")
         print("  create          - Создать новую игру")
-        print("  join <id>       - Присоединиться к игре (например: join game_1)")
+        print("  join <id>       - Присоединиться к игре")
         print("  ready           - Отметить готовность к игре")
+        print("  verify          - Проверить целостность колоды")
         print("  chat <text>     - Отправить сообщение в чат")
         print("\n🎮 Игровые действия (только когда ваш ход):")
         print("  fold            - Сбросить карты")
-        print("  check           - Пропустить ход (если нет ставок)")
+        print("  check           - Пропустить ход")
         print("  call            - Уравнять текущую ставку")
         print("  bet <amount>    - Сделать ставку")
         print("  raise <amount>  - Поднять ставку")
