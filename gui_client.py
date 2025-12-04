@@ -170,14 +170,20 @@ class PokerClientGUI:
         player_cards_frame = ttk.LabelFrame(left_panel, text="Ваши карты", padding="10")
         player_cards_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
 
-        self.player_cards_label = ttk.Label(player_cards_frame, text="Не разданы", font=("Arial", 14))
+        self.player_cards_container = ttk.Frame(player_cards_frame)
+        self.player_cards_container.pack()
+
+        self.player_cards_label = ttk.Label(self.player_cards_container, text="Не разданы", font=("Arial", 14))
         self.player_cards_label.pack()
 
         # Карты на столе
         community_cards_frame = ttk.LabelFrame(left_panel, text="Карты на столе", padding="10")
         community_cards_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
 
-        self.community_cards_label = ttk.Label(community_cards_frame, text="Нет карт", font=("Arial", 14))
+        self.community_cards_container = ttk.Frame(community_cards_frame)
+        self.community_cards_container.pack()
+
+        self.community_cards_label = ttk.Label(self.community_cards_container, text="Нет карт", font=("Arial", 14))
         self.community_cards_label.pack()
 
         # Информация об игре
@@ -273,6 +279,34 @@ class PokerClientGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, wrap=tk.WORD)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
+    def update_card_display(self, cards, container, default_text):
+        """Обновляет отображение карт с цветами"""
+        # Очищаем контейнер
+        for widget in container.winfo_children():
+            widget.destroy()
+
+        if not cards:
+            label = ttk.Label(container, text=default_text, font=("Arial", 14))
+            label.pack()
+            return
+
+        # Создаем фрейм для карт
+        cards_frame = ttk.Frame(container)
+        cards_frame.pack()
+
+        for card in cards:
+            # Определяем цвет карты
+            if card.endswith('♠') or card.endswith('♣'):  # Пики и трефы - темно-синие
+                color = "#000080"  # Темно-синий
+            else:  # Червы и бубны - красные
+                color = "#FF0000"  # Красный
+
+            # Создаем метку с картой и цветом
+            card_label = tk.Label(cards_frame, text=card, font=("Arial", 16, "bold"),
+                                 foreground=color, background="white",
+                                 relief="raised", borderwidth=2, padx=5, pady=5)
+            card_label.pack(side=tk.LEFT, padx=2)
+
     def show_game_result(self, winners, pot, player_combinations, player_cards):
         """Показать окно с результатами игры"""
         result_window = tk.Toplevel(self.root)
@@ -307,47 +341,43 @@ class PokerClientGUI:
         # Информация о банке
         ttk.Label(main_frame, text=f"🏦 Банк: {pot}", font=("Arial", 12)).pack(pady=(0, 10))
 
-        # Создаем фрейм с прокруткой для карт игроков
-        cards_frame = ttk.LabelFrame(main_frame, text="Карты игроков", padding="10")
-        cards_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-
-        canvas = tk.Canvas(cards_frame)
-        scrollbar = ttk.Scrollbar(cards_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        # Карты всех игроков
-        for i, (player_id, cards) in enumerate(player_cards.items()):
-            frame = ttk.Frame(scrollable_frame)
-            frame.pack(fill=tk.X, pady=5)
+        # Карты всех игроков с их комбинациями
+        for player_id, cards in player_cards.items():
+            player_frame = ttk.Frame(main_frame)
+            player_frame.pack(fill=tk.X, pady=5)
 
             combination = player_combinations.get(player_id, "Неизвестно")
 
             if player_id == self.player_id:
-                player_text = f"👤 Вы ({player_id}): {', '.join(cards)}"
-                combo_text = f"Комбинация: {combination}"
+                player_text = f"👤 Вы ({player_id}):"
                 color = "green"
             else:
-                player_text = f"👤 {player_id}: {', '.join(cards)}"
-                combo_text = f"Комбинация: {combination}"
+                player_text = f"👤 {player_id}:"
                 color = "black"
 
-            ttk.Label(frame, text=player_text, foreground=color, font=("Arial", 10, "bold")).pack(anchor=tk.W)
-            ttk.Label(frame, text=combo_text, foreground=color).pack(anchor=tk.W)
+            ttk.Label(player_frame, text=player_text, foreground=color,
+                     font=("Arial", 10, "bold")).pack(anchor=tk.W)
 
-        # Размещаем Canvas и Scrollbar
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            # Отображаем карты игрока с цветами
+            cards_frame = ttk.Frame(player_frame)
+            cards_frame.pack(anchor=tk.W, pady=2)
+
+            for card in cards:
+                if card.endswith('♠') or card.endswith('♣'):
+                    card_color = "#000080"  # Темно-синий
+                else:
+                    card_color = "#FF0000"  # Красный
+
+                card_label = tk.Label(cards_frame, text=card, font=("Arial", 12),
+                                     foreground=card_color, background="white",
+                                     relief="solid", borderwidth=1, padx=3, pady=2)
+                card_label.pack(side=tk.LEFT, padx=1)
+
+            ttk.Label(player_frame, text=f"Комбинация: {combination}",
+                     foreground=color).pack(anchor=tk.W)
 
         # Кнопка закрытия
-        ttk.Button(main_frame, text="Закрыть", command=result_window.destroy).pack(pady=(10, 0))
+        ttk.Button(main_frame, text="Закрыть", command=result_window.destroy).pack(pady=(20, 0))
 
     def log_message(self, message):
         """Добавление сообщения в лог"""
@@ -369,36 +399,39 @@ class PokerClientGUI:
 
         if self.my_turn:
             self.turn_label.config(text="СЕЙЧАС ВАШ ХОД!", foreground="green")
-            # Включаем поле для ставки только когда ход игрока
             self.bet_amount_entry.config(state=tk.NORMAL)
         else:
             self.turn_label.config(text="Ожидание хода...", foreground="red")
             self.bet_amount_entry.config(state=tk.DISABLED)
 
-        # Обновление карт
-        if self.my_cards:
-            self.player_cards_label.config(text=", ".join(self.my_cards))
-        else:
-            self.player_cards_label.config(text="Не разданы")
+        # Обновление карт с цветами
+        self.update_card_display(self.my_cards, self.player_cards_container, "Не разданы")
+        self.update_card_display(self.community_cards, self.community_cards_container, "Нет карт")
 
-        if self.community_cards:
-            self.community_cards_label.config(text=", ".join(self.community_cards))
-        else:
-            self.community_cards_label.config(text="Нет карт")
-
-        # Обновление состояния кнопок
+        # Обновление состояния кнопок согласно правилам покера
         if self.my_turn and self.game_id:
             self.fold_btn.config(state=tk.NORMAL)
-            self.check_btn.config(state=tk.NORMAL)
-            self.call_btn.config(state=tk.NORMAL)
-            self.bet_btn.config(state=tk.NORMAL)
-            self.raise_btn.config(state=tk.NORMAL)
+
+            # Если есть текущая ставка
+            if self.current_bet > 0:
+                # Нельзя делать check при наличии ставки
+                self.check_btn.config(state=tk.DISABLED)
+                self.call_btn.config(state=tk.NORMAL)
+                self.bet_btn.config(state=tk.DISABLED)  # Нельзя сделать bet, только raise
+                self.raise_btn.config(state=tk.NORMAL)
+            else:
+                # Если нет текущей ставки
+                self.check_btn.config(state=tk.NORMAL)
+                self.call_btn.config(state=tk.DISABLED)  # Нельзя call без ставки
+                self.bet_btn.config(state=tk.NORMAL)
+                self.raise_btn.config(state=tk.DISABLED)  # Нельзя raise без ставки
         else:
             self.fold_btn.config(state=tk.DISABLED)
             self.check_btn.config(state=tk.DISABLED)
             self.call_btn.config(state=tk.DISABLED)
             self.bet_btn.config(state=tk.DISABLED)
             self.raise_btn.config(state=tk.DISABLED)
+            self.bet_amount_entry.config(state=tk.DISABLED)
 
     def connect_to_server(self):
         """Подключение к серверу"""
