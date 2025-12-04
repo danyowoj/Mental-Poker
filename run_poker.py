@@ -14,9 +14,15 @@ def run_server():
 
 
 def run_client():
-    """Запуск клиента"""
-    print("🎮 Запуск клиента ментального покера...")
+    """Запуск клиента (консольный)"""
+    print("🎮 Запуск консольного клиента ментального покера...")
     subprocess.run([sys.executable, "client.py"])
+
+
+def run_gui_client():
+    """Запуск GUI клиента"""
+    print("🖥️  Запуск графического клиента ментального покера...")
+    subprocess.run([sys.executable, "gui_client.py"])
 
 
 def show_menu():
@@ -25,23 +31,26 @@ def show_menu():
     print("🎲 СИСТЕМА МЕНТАЛЬНОГО ПОКЕРА")
     print("=" * 50)
     print("1. 🚀 Запустить сервер")
-    print("2. 🎮 Запустить клиент")
-    print("3. 🔧 Проверить зависимости")
-    print("4. 📖 Показать справку")
-    print("5. 🚪 Выход")
+    print("2. 🎮 Запустить консольный клиент")
+    print("3. 🖥️  Запустить графический клиент")
+    print("4. 🔧 Проверить зависимости")
+    print("5. 📖 Показать справку")
+    print("6. 🚪 Выход")
     print("=" * 50)
 
-    choice = input("\nВыберите действие (1-5): ").strip()
+    choice = input("\nВыберите действие (1-6): ").strip()
 
     if choice == '1':
         run_server()
     elif choice == '2':
         run_client()
     elif choice == '3':
-        check_dependencies()
+        run_gui_client()
     elif choice == '4':
-        show_help()
+        check_dependencies()
     elif choice == '5':
+        show_help()
+    elif choice == '6':
         print("\n👋 До свидания!")
         sys.exit(0)
     else:
@@ -82,19 +91,18 @@ def show_help():
     print("  • Никто не знает карт других игроков")
     print("  • Честность игры математически доказана")
 
-    print("\n🎮 КОМАНДЫ КЛИЕНТА:")
-    print("  create          - Создать игру")
-    print("  join <id>       - Присоединиться к игре")
-    print("  ready           - Готов к игре")
-    print("  verify          - Проверить колоду")
-    print("  fold/check/call - Игровые действия")
-    print("  bet/raise       - Ставки")
-    print("  status          - Статус")
-    print("  help            - Справка")
+    print("\n🎮 ГРАФИЧЕСКИЙ КЛИЕНТ:")
+    print("  • Подключение: введите хост и порт, нажмите 'Подключиться'")
+    print("  • Создание игры: нажмите 'Создать игру'")
+    print("  • Присоединение: введите ID игры, нажмите 'Присоединиться'")
+    print("  • Готовность: нажмите 'Готов'")
+    print("  • Действия: Fold, Check, Call, Bet, Raise")
+    print("  • Ставка: введите сумму в поле, нажмите Bet или Raise")
+    print("  • Чат: введите сообщение, нажмите Enter или 'Отправить'")
 
     print("\n⚙️  ЗАПУСК:")
     print("  1. Запустите сервер (пункт 1)")
-    print("  2. Запустите клиенты (пункт 2)")
+    print("  2. Запустите GUI клиенты (пункт 3)")
     print("  3. Минимум 2 игрока для начала игры")
 
     input("\nНажмите Enter для продолжения...")
