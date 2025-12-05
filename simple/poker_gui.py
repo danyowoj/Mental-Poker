@@ -1,5 +1,5 @@
 """
-Графический клиент для ментального покера RSA (исправленная версия)
+Графический клиент для ментального покера RSA (с исправленным отображением карт)
 """
 
 import asyncio
@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, font
 from datetime import datetime
 
 # Настройка логирования
@@ -22,7 +22,7 @@ class PokerClientGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("🎲 Ментальный покер RSA")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x750")
 
         # Иконка (если есть)
         try:
@@ -50,8 +50,24 @@ class PokerClientGUI:
         # Переменные для отображения статуса
         self.connection_status = tk.StringVar(value="🔴 Не подключено")
 
-        # Стили
-        self.setup_styles()
+        # Шрифты
+        self.card_font = ("Courier", 16, "bold")
+        self.title_font = ("Arial", 12, "bold")
+        self.info_font = ("Arial", 10)
+
+        # Цвета
+        self.colors = {
+            'spade': "#000080",      # Темно-синий для пик
+            'club': "#000080",       # Темно-синий для треф
+            'heart': "#FF0000",      # Красный для черв
+            'diamond': "#FF0000",    # Красный для бубен
+            'background': "#f0f0f0",
+            'frame_bg': "#ffffff",
+            'active': "#4CAF50",
+            'inactive': "#cccccc",
+            'error': "#ff4444",
+            'success': "#44ff44"
+        }
 
         # Создаем интерфейс
         self.create_widgets()
@@ -60,21 +76,10 @@ class PokerClientGUI:
         self.loop = None
         self.thread = None
 
-    def setup_styles(self):
-        """Настройка стилей интерфейса"""
-        style = ttk.Style()
-        style.theme_use('clam')
-
-        # Настраиваем стили кнопок
-        style.configure('Accent.TButton',
-                       background='#3498db',
-                       foreground='white',
-                       font=('Arial', 10, 'bold'))
-
     def create_widgets(self):
         """Создание элементов интерфейса"""
         # Основной контейнер
-        main_container = ttk.Frame(self.root, padding="10")
+        main_container = ttk.Frame(self.root, padding="5")
         main_container.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Настройка расширения
@@ -85,11 +90,11 @@ class PokerClientGUI:
 
         # Верхняя панель: подключение
         connection_frame = ttk.LabelFrame(main_container, text="Подключение к серверу", padding="10")
-        connection_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        connection_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
 
         # Поля для ввода
         ttk.Label(connection_frame, text="Хост:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
-        self.host_entry = ttk.Entry(connection_frame, width=15)
+        self.host_entry = ttk.Entry(connection_frame, width=20)
         self.host_entry.insert(0, "localhost")
         self.host_entry.grid(row=0, column=1, padx=(0, 10))
 
@@ -120,151 +125,167 @@ class PokerClientGUI:
         self.status_label = ttk.Label(connection_frame, textvariable=self.connection_status)
         self.status_label.grid(row=0, column=7)
 
-        # Основная область
-        notebook = ttk.Notebook(main_container)
-        notebook.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        # Основная область - создаем фрейм для разделения на левую и правую части
+        main_game_frame = ttk.Frame(main_container)
+        main_game_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        main_game_frame.columnconfigure(0, weight=1)  # Левая колонка (1/3)
+        main_game_frame.columnconfigure(1, weight=2)  # Правая колонка (2/3)
+        main_game_frame.rowconfigure(0, weight=1)
 
-        # Вкладка 1: Игра
-        game_tab = ttk.Frame(notebook, padding="10")
-        notebook.add(game_tab, text="🎮 Игра")
-        self.setup_game_tab(game_tab)
+        # Левая колонка (1/3 ширины) - карты и информация
+        left_frame = ttk.Frame(main_game_frame)
+        left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
+        left_frame.columnconfigure(0, weight=1)
 
-        # Вкладка 2: Управление
-        control_tab = ttk.Frame(notebook, padding="10")
-        notebook.add(control_tab, text="⚙️ Управление")
-        self.setup_control_tab(control_tab)
+        # Карты игрока
+        player_frame = ttk.LabelFrame(left_frame, text="Ваши карты", padding="10")
+        player_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 5))
+        player_frame.columnconfigure(0, weight=1)
 
-        # Вкладка 3: О программе
-        about_tab = ttk.Frame(notebook, padding="10")
-        notebook.add(about_tab, text="ℹ️ О программе")
-        self.setup_about_tab(about_tab)
+        # Контейнер для карт игрока - ИСПРАВЛЕНО: используем Frame вместо создания метки
+        self.player_cards_container = ttk.Frame(player_frame)
+        self.player_cards_container.grid(row=0, column=0, pady=10, sticky=(tk.W, tk.E))
+
+        # Общие карты
+        community_frame = ttk.LabelFrame(left_frame, text="Карты на столе", padding="10")
+        community_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 5))
+        community_frame.columnconfigure(0, weight=1)
+
+        # Контейнер для общих карт - ИСПРАВЛЕНО: используем Frame
+        self.community_cards_container = ttk.Frame(community_frame)
+        self.community_cards_container.grid(row=0, column=0, pady=10, sticky=(tk.W, tk.E))
+
+        # Информация об игре
+        info_frame = ttk.LabelFrame(left_frame, text="Информация об игре", padding="10")
+        info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        info_frame.columnconfigure(1, weight=1)
+
+        # Таблица информации
+        info_rows = [
+            ("ID игрока:", "player_id_display", "Не подключен"),
+            ("ID игры:", "game_id_display", "Нет"),
+            ("Ваши фишки:", "chips_display", "1000"),
+            ("Банк:", "pot_display", "0"),
+            ("Текущая ставка:", "bet_display", "0"),
+            ("Очередь хода:", "turn_display", "Ожидание..."),
+            ("Ключ RSA (e):", "e_display", "Не сгенерирован"),
+        ]
+
+        for i, (label_text, attr_name, default_value) in enumerate(info_rows):
+            ttk.Label(info_frame, text=label_text, font=self.info_font).grid(
+                row=i, column=0, sticky=tk.W, pady=3, padx=(0, 10)
+            )
+            label = ttk.Label(info_frame, text=default_value, font=self.info_font)
+            label.grid(row=i, column=1, sticky=tk.W, pady=3)
+            setattr(self, attr_name, label)
+
+        # Особый стиль для метки хода
+        self.turn_display.config(foreground="red")
+
+        # Правая колонка (2/3 ширины) - действия и управление
+        right_frame = ttk.Frame(main_game_frame)
+        right_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        right_frame.columnconfigure(0, weight=1)
+
+        # Создаем Notebook для правой колонки
+        right_notebook = ttk.Notebook(right_frame)
+        right_notebook.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Вкладка 1: Действия
+        actions_tab = ttk.Frame(right_notebook, padding="10")
+        right_notebook.add(actions_tab, text="🎮 Действия")
+        self.setup_actions_tab(actions_tab)
+
+        # Вкладка 2: Управление игрой
+        game_control_tab = ttk.Frame(right_notebook, padding="10")
+        right_notebook.add(game_control_tab, text="⚙️ Управление")
+        self.setup_game_control_tab(game_control_tab)
+
+        # Вкладка 3: Чат
+        chat_tab = ttk.Frame(right_notebook, padding="10")
+        right_notebook.add(chat_tab, text="💬 Чат")
+        self.setup_chat_tab(chat_tab)
 
         # Нижняя панель: лог
         log_frame = ttk.LabelFrame(main_container, text="Лог событий", padding="10")
-        log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        log_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
 
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap=tk.WORD)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=6, wrap=tk.WORD)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
-    def setup_game_tab(self, parent):
-        """Настройка вкладки игры"""
+    def setup_actions_tab(self, parent):
+        """Настройка вкладки действий"""
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        # Левая панель: карты
-        left_panel = ttk.Frame(parent)
-        left_panel.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
-
-        # Карты игрока
-        player_frame = ttk.LabelFrame(left_panel, text="Ваши карты", padding="10")
-        player_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        player_frame.columnconfigure(0, weight=1)
-
-        self.player_cards_label = ttk.Label(
-            player_frame,
-            text="🃏 Карты еще не разданы",
-            font=("Arial", 16),
-            anchor=tk.CENTER
-        )
-        self.player_cards_label.grid(row=0, column=0, pady=20)
-
-        # Общие карты
-        community_frame = ttk.LabelFrame(left_panel, text="Карты на столе", padding="10")
-        community_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
-        community_frame.columnconfigure(0, weight=1)
-
-        self.community_cards_label = ttk.Label(
-            community_frame,
-            text="🃏 Общие карты еще не открыты",
-            font=("Arial", 14),
-            anchor=tk.CENTER
-        )
-        self.community_cards_label.grid(row=0, column=0, pady=10)
-
-        # Информация об игре
-        info_frame = ttk.LabelFrame(left_panel, text="Информация об игре", padding="10")
-        info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        info_grid = ttk.Frame(info_frame)
-        info_grid.grid(row=0, column=0, sticky=(tk.W, tk.E))
-
-        # Сетка информации
-        ttk.Label(info_grid, text="ID игрока:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.player_id_display = ttk.Label(info_grid, text="Не подключен")
-        self.player_id_display.grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(info_grid, text="ID игры:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.game_id_display = ttk.Label(info_grid, text="Нет")
-        self.game_id_display.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(info_grid, text="Ваши фишки:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.chips_display = ttk.Label(info_grid, text="1000")
-        self.chips_display.grid(row=2, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(info_grid, text="Банк:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        self.pot_display = ttk.Label(info_grid, text="0")
-        self.pot_display.grid(row=3, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(info_grid, text="Текущая ставка:").grid(row=4, column=0, sticky=tk.W, pady=2)
-        self.bet_display = ttk.Label(info_grid, text="0")
-        self.bet_display.grid(row=4, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(info_grid, text="Очередь хода:").grid(row=5, column=0, sticky=tk.W, pady=2)
-        self.turn_display = ttk.Label(info_grid, text="Ожидание...", foreground="red")
-        self.turn_display.grid(row=5, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        # Правая панель: действия
-        right_panel = ttk.Frame(parent)
-        right_panel.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
-        right_panel.columnconfigure(0, weight=1)
-
-        # Действия в игре
-        actions_frame = ttk.LabelFrame(right_panel, text="Действия", padding="10")
-        actions_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
 
         # Поле для ставки
-        bet_frame = ttk.Frame(actions_frame)
-        bet_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        bet_frame = ttk.LabelFrame(parent, text="Ставка", padding="10")
+        bet_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        ttk.Label(bet_frame, text="Сумма:").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(bet_frame, text="Сумма:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.bet_amount = ttk.Entry(bet_frame, width=15, state=tk.DISABLED)
-        self.bet_amount.pack(side=tk.LEFT, padx=(0, 10))
+        self.bet_amount.grid(row=0, column=1, padx=(0, 10), sticky=tk.W)
 
         # Кнопки действий
-        self.fold_btn = ttk.Button(actions_frame, text="Fold", command=self.fold, state=tk.DISABLED)
-        self.fold_btn.grid(row=1, column=0, padx=5, pady=5, sticky=tk.EW)
+        actions_grid = ttk.LabelFrame(parent, text="Игровые действия", padding="10")
+        actions_grid.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        self.check_btn = ttk.Button(actions_frame, text="Check", command=self.check, state=tk.DISABLED)
-        self.check_btn.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW)
+        # Создаем сетку 3x2 для кнопок
+        actions = [
+            ("Fold", self.fold, 0, 0),
+            ("Check", self.check, 0, 1),
+            ("Call", self.call, 0, 2),
+            ("Bet", self.bet, 1, 0),
+            ("Raise", self.raise_bet, 1, 1),
+            ("All-in", self.allin, 1, 2),
+        ]
 
-        self.call_btn = ttk.Button(actions_frame, text="Call", command=self.call, state=tk.DISABLED)
-        self.call_btn.grid(row=1, column=2, padx=5, pady=5, sticky=tk.EW)
+        for text, command, row, col in actions:
+            btn = ttk.Button(
+                actions_grid,
+                text=text,
+                command=command,
+                width=10
+            )
+            btn.grid(row=row, column=col, padx=5, pady=5, sticky=tk.EW)
+            setattr(self, f"{text.lower().replace('-', '_')}_btn", btn)
 
-        self.bet_btn = ttk.Button(actions_frame, text="Bet", command=self.bet, state=tk.DISABLED)
-        self.bet_btn.grid(row=2, column=0, padx=5, pady=5, sticky=tk.EW)
+        # Равномерное распределение кнопок
+        for i in range(3):
+            actions_grid.columnconfigure(i, weight=1)
 
-        self.raise_btn = ttk.Button(actions_frame, text="Raise", command=self.raise_bet, state=tk.DISABLED)
-        self.raise_btn.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
+        # Индикатор хода
+        turn_frame = ttk.LabelFrame(parent, text="Статус хода", padding="10")
+        turn_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
 
-        self.allin_btn = ttk.Button(actions_frame, text="All-in", command=self.allin, state=tk.DISABLED)
-        self.allin_btn.grid(row=2, column=2, padx=5, pady=5, sticky=tk.EW)
+        self.turn_indicator = ttk.Label(
+            turn_frame,
+            text="⏳ Ожидайте своего хода",
+            font=("Arial", 12),
+            foreground="red"
+        )
+        self.turn_indicator.pack(pady=5)
 
-        # Управление игрой
-        game_control_frame = ttk.LabelFrame(right_panel, text="Управление игрой", padding="10")
-        game_control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N), pady=(0, 10))
+    def setup_game_control_tab(self, parent):
+        """Настройка вкладки управления игрой"""
+        parent.columnconfigure(0, weight=1)
+
+        # Создание/присоединение к игре
+        game_frame = ttk.LabelFrame(parent, text="Управление игрой", padding="10")
+        game_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         self.create_game_btn = ttk.Button(
-            game_control_frame,
-            text="Создать игру",
+            game_frame,
+            text="Создать новую игру",
             command=self.create_game,
-            state=tk.DISABLED
+            state=tk.DISABLED,
+            width=20
         )
-        self.create_game_btn.pack(fill=tk.X, pady=(0, 5))
+        self.create_game_btn.pack(fill=tk.X, pady=(0, 10))
 
-        join_frame = ttk.Frame(game_control_frame)
-        join_frame.pack(fill=tk.X, pady=(0, 5))
+        join_frame = ttk.Frame(game_frame)
+        join_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(join_frame, text="ID игры:").pack(side=tk.LEFT, padx=(0, 5))
         self.game_id_entry = ttk.Entry(join_frame)
@@ -274,29 +295,65 @@ class PokerClientGUI:
             join_frame,
             text="Присоединиться",
             command=self.join_game,
-            state=tk.DISABLED
+            state=tk.DISABLED,
+            width=15
         )
         self.join_game_btn.pack(side=tk.RIGHT)
 
         self.ready_btn = ttk.Button(
-            game_control_frame,
-            text="Готов к игре",
+            game_frame,
+            text="✅ Готов к игре",
             command=self.send_ready,
             state=tk.DISABLED
         )
         self.ready_btn.pack(fill=tk.X)
 
-        # Чат
-        chat_frame = ttk.LabelFrame(right_panel, text="Чат", padding="10")
-        chat_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        chat_frame.columnconfigure(0, weight=1)
-        chat_frame.rowconfigure(0, weight=1)
+        # Ключи RSA
+        keys_frame = ttk.LabelFrame(parent, text="Криптография RSA", padding="10")
+        keys_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        self.chat_display = scrolledtext.ScrolledText(chat_frame, height=10, wrap=tk.WORD)
-        self.chat_display.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        key_info = [
+            ("Общий модуль (n):", "n_display", "Не получен"),
+            ("Ваш открытый ключ (e):", "e_value_display", "Не сгенерирован"),
+            ("Ваш закрытый ключ (d):", "d_value_display", "Секретно"),
+        ]
 
-        chat_input_frame = ttk.Frame(chat_frame)
-        chat_input_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        for i, (label_text, attr_name, default_value) in enumerate(key_info):
+            ttk.Label(keys_frame, text=label_text).grid(
+                row=i, column=0, sticky=tk.W, pady=3, padx=(0, 10)
+            )
+            label = ttk.Label(keys_frame, text=default_value, font=("Courier", 9))
+            label.grid(row=i, column=1, sticky=tk.W, pady=3)
+            setattr(self, attr_name, label)
+
+        self.generate_keys_btn = ttk.Button(
+            keys_frame,
+            text="🔑 Сгенерировать ключи RSA",
+            command=self.generate_keys,
+            state=tk.DISABLED
+        )
+        self.generate_keys_btn.grid(row=3, column=0, columnspan=2, pady=(10, 0), sticky=tk.EW)
+
+        # Управление соединением
+        control_frame = ttk.LabelFrame(parent, text="Управление", padding="10")
+        control_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+
+        ttk.Button(control_frame, text="🔄 Обновить ключи", command=self.update_keys).pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(control_frame, text="📡 Проверить соединение", command=self.ping).pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(control_frame, text="🧹 Очистить лог", command=self.clear_log).pack(fill=tk.X)
+
+    def setup_chat_tab(self, parent):
+        """Настройка вкладки чата"""
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        # Отображение чата
+        self.chat_display = scrolledtext.ScrolledText(parent, height=20, wrap=tk.WORD)
+        self.chat_display.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+
+        # Поле ввода
+        chat_input_frame = ttk.Frame(parent)
+        chat_input_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
 
         self.chat_input = ttk.Entry(chat_input_frame)
         self.chat_input.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
@@ -304,100 +361,57 @@ class PokerClientGUI:
 
         ttk.Button(chat_input_frame, text="Отправить", command=self.send_chat).grid(row=0, column=1)
 
-    def setup_control_tab(self, parent):
-        """Настройка вкладки управления"""
-        parent.columnconfigure(0, weight=1)
+        # Настройка расширения
+        chat_input_frame.columnconfigure(0, weight=1)
 
-        # Ключи RSA
-        keys_frame = ttk.LabelFrame(parent, text="Ключи RSA", padding="10")
-        keys_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+    def create_card_widget(self, parent, card_text):
+        """Создает виджет карты с правильным цветом"""
+        # Определяем цвет карты
+        if '♠' in card_text or '♣' in card_text:
+            color = self.colors['spade']
+        else:
+            color = self.colors['heart']
 
-        ttk.Label(keys_frame, text="Общий модуль (n):").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.n_display = ttk.Label(keys_frame, text="Не получен")
-        self.n_display.grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+        # Создаем фрейм для карты с рамкой
+        card_frame = tk.Frame(parent, bg='white', relief='raised', borderwidth=2)
 
-        ttk.Label(keys_frame, text="Открытый ключ (e):").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.e_display = ttk.Label(keys_frame, text="Не сгенерирован")
-        self.e_display.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        ttk.Label(keys_frame, text="Закрытый ключ (d):").grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.d_display = ttk.Label(keys_frame, text="Секретно")
-        self.d_display.grid(row=2, column=1, sticky=tk.W, pady=2, padx=(10, 0))
-
-        self.generate_keys_btn = ttk.Button(
-            keys_frame,
-            text="Сгенерировать ключи",
-            command=self.generate_keys,
-            state=tk.DISABLED
+        # Метка с картой
+        card_label = tk.Label(
+            card_frame,
+            text=card_text,
+            font=self.card_font,
+            fg=color,
+            bg='white',
+            padx=10,
+            pady=5
         )
-        self.generate_keys_btn.grid(row=3, column=0, columnspan=2, pady=(10, 0), sticky=tk.EW)
+        card_label.pack()
 
-        # Статистика
-        stats_frame = ttk.LabelFrame(parent, text="Статистика", padding="10")
-        stats_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        return card_frame
 
-        ttk.Label(stats_frame, text="Подключенные игроки:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.players_display = ttk.Label(stats_frame, text="0")
-        self.players_display.grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+    def display_cards(self, container, cards, default_text):
+        """Отображает карты в контейнере или текст по умолчанию"""
+        # Очищаем контейнер
+        for widget in container.winfo_children():
+            widget.destroy()
 
-        ttk.Label(stats_frame, text="Активные игры:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.games_display = ttk.Label(stats_frame, text="0")
-        self.games_display.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+        if not cards:
+            # Показываем текст по умолчанию
+            label = ttk.Label(container, text=default_text, font=("Arial", 12))
+            label.pack(pady=20)
+            return
 
-        # Управление
-        control_frame = ttk.LabelFrame(parent, text="Управление", padding="10")
-        control_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        # Создаем фрейм для карт
+        cards_frame = ttk.Frame(container)
+        cards_frame.pack()
 
-        ttk.Button(control_frame, text="Обновить ключи", command=self.update_keys).pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(control_frame, text="Проверить соединение", command=self.ping).pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(control_frame, text="Очистить лог", command=self.clear_log).pack(fill=tk.X)
-
-    def setup_about_tab(self, parent):
-        """Настройка вкладки о программе"""
-        parent.columnconfigure(0, weight=1)
-
-        about_text = """
-🎲 МЕНТАЛЬНЫЙ ПОКЕР С RSA
-
-Версия: 1.0.0
-
-🔐 КРИПТОГРАФИЧЕСКАЯ ОСНОВА:
-Алгоритм ментального покера позволяет играть в покер
-по интернету без доверенного сервера, который знает
-карты игроков.
-
-📋 ОСНОВНЫЕ ПРИНЦИПЫ:
-1. Сервер генерирует общий модуль RSA n = p * q
-2. Каждый игрок генерирует свою пару ключей (e_i, d_i)
-3. Карты представляются числами M_j, где 1 < M_j < n
-4. Все игроки последовательно шифруют колоду
-5. Каждый игрок расшифровывает свои карты в обратном порядке
-
-⚡ ПРЕИМУЩЕСТВА:
-• Сервер не знает карт игроков
-• Колода честно перемешана всеми игроками
-• Невозможно подменить карты
-• Полная прозрачность процесса
-
-👨‍💻 РАЗРАБОТЧИКИ:
-Учебный проект по криптографии
-Группа: Крипто-2024
-
-📞 ПОДДЕРЖКА:
-По вопросам и предложениям обращайтесь
-к преподавателю курса.
-"""
-
-        about_label = ttk.Label(parent, text=about_text, justify=tk.LEFT, font=("Arial", 10))
-        about_label.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=10, pady=10)
-
-        ttk.Separator(parent, orient='horizontal').grid(row=1, column=0, sticky=(tk.W, tk.E), pady=10)
-
-        ttk.Label(parent, text="© 2024 Ментальный покер RSA. Все права защищены.",
-                 font=("Arial", 8), foreground="gray").grid(row=2, column=0)
+        # Отображаем каждую карту
+        for card in cards:
+            card_widget = self.create_card_widget(cards_frame, card)
+            card_widget.pack(side=tk.LEFT, padx=5)
 
     def update_display(self):
-        """Обновление отображения состояния"""
+        """Обновление отображения состояния - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         # Обновляем статус подключения
         if self.connected:
             self.connection_status.set("🟢 Подключено")
@@ -414,53 +428,36 @@ class PokerClientGUI:
         self.bet_display.configure(text=str(self.current_bet))
 
         # Обновляем ключи RSA
-        self.n_display.configure(text=f"{str(self.common_n)[:20]}..." if self.common_n else "Не получен")
+        n_display = f"{str(self.common_n)[:20]}..." if self.common_n else "Не получен"
+        self.n_display.configure(text=n_display)
         self.e_display.configure(text=str(self.e) if self.e else "Не сгенерирован")
+        self.e_value_display.configure(text=str(self.e) if self.e else "Не сгенерирован")
+        self.d_value_display.configure(text="Секретно" if self.d else "Не сгенерирован")
 
         # Обновляем очередь хода
         if self.my_turn:
             self.turn_display.configure(text="СЕЙЧАС ВАШ ХОД!", foreground="green")
+            self.turn_indicator.configure(text="✅ СЕЙЧАС ВАШ ХОД!", foreground="green")
             self.enable_action_buttons()
             self.bet_amount.configure(state=tk.NORMAL)
         else:
             self.turn_display.configure(text="Ожидание хода...", foreground="red")
+            self.turn_indicator.configure(text="⏳ Ожидайте своего хода", foreground="red")
             self.disable_action_buttons()
             self.bet_amount.configure(state=tk.DISABLED)
 
-        # Обновляем отображение карт
-        self.update_cards_display()
+        # ОБНОВЛЯЕМ ОТОБРАЖЕНИЕ КАРТ - ИСПРАВЛЕНО
+        self.display_cards(
+            self.player_cards_container,
+            self.my_cards,
+            "🃏 Карты еще не разданы"
+        )
 
-    def update_cards_display(self):
-        """Обновление отображения карт"""
-        # Карты игрока
-        if self.my_cards:
-            cards_text = ""
-            for card in self.my_cards:
-                # Определяем цвет карты
-                if '♠' in card or '♣' in card:
-                    color = "#000080"  # Темно-синий
-                else:
-                    color = "#FF0000"  # Красный
-
-                cards_text += f"[{card}] "
-
-            self.player_cards_label.configure(text=cards_text.strip())
-        else:
-            self.player_cards_label.configure(text="🃏 Карты еще не разданы")
-
-        # Общие карты
-        if self.community_cards:
-            cards_text = ""
-            for card in self.community_cards:
-                if '♠' in card or '♣' in card:
-                    color = "#000080"
-                else:
-                    color = "#FF0000"
-                cards_text += f"[{card}] "
-
-            self.community_cards_label.configure(text=cards_text.strip())
-        else:
-            self.community_cards_label.configure(text="🃏 Общие карты еще не открыты")
+        self.display_cards(
+            self.community_cards_container,
+            self.community_cards,
+            "🃏 Общие карты еще не открыты"
+        )
 
     def enable_action_buttons(self):
         """Включение кнопок действий"""
@@ -477,12 +474,12 @@ class PokerClientGUI:
             self.bet_btn.configure(state=tk.NORMAL)
             self.raise_btn.configure(state=tk.DISABLED)
 
-        self.allin_btn.configure(state=tk.NORMAL)
+        self.all_in_btn.configure(state=tk.NORMAL)
 
     def disable_action_buttons(self):
         """Отключение кнопок действий"""
         for btn in [self.fold_btn, self.check_btn, self.call_btn,
-                   self.bet_btn, self.raise_btn, self.allin_btn]:
+                   self.bet_btn, self.raise_btn, self.all_in_btn]:
             btn.configure(state=tk.DISABLED)
 
     def log(self, message):
@@ -673,14 +670,25 @@ class PokerClientGUI:
         elif msg_type == 'game_result':
             winners = message.get('winners', [])
             pot = message.get('pot', 0)
+            player_combinations = message.get('player_combinations', {})
+            player_cards = message.get('player_cards', {})
 
             self.root.after(0, lambda: self.log("\n🏁 " + message.get('message')))
             self.root.after(0, lambda: self.log(f"🏦 Банк: {pot}"))
 
+            # Показываем окно с результатами
+            result_text = "Результаты игры:\n\n"
+            for player_id, cards in player_cards.items():
+                combination = player_combinations.get(player_id, "Неизвестно")
+                if player_id == self.player_id:
+                    result_text += f"Вы ({player_id}): {', '.join(cards)} - {combination}\n"
+                else:
+                    result_text += f"{player_id}: {', '.join(cards)} - {combination}\n"
+
             if self.player_id in winners:
-                messagebox.showinfo("Результат", "🎉 Поздравляем! Вы победили!")
+                messagebox.showinfo("🎉 ПОБЕДА!", result_text + f"\nВы выиграли {pot} фишек!")
             else:
-                messagebox.showinfo("Результат", "😔 Вы проиграли. Попробуйте еще раз!")
+                messagebox.showinfo("😔 ПОРАЖЕНИЕ", result_text + "\nВы проиграли. Попробуйте еще раз!")
 
             self.my_turn = False
             self.root.after(0, self.update_display)
